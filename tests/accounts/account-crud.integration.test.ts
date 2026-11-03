@@ -108,4 +108,28 @@ describe('account CRUD', () => {
       .rejects.toMatchObject({ statusCode: 409 });
     expect(await AccountModel.findById(account.id)).not.toBeNull();
   });
+
+  it('allows permanent deletion when its only transaction references are soft-deleted', async () => {
+    const account = await accountService.create(userId.toString(), {
+      name: 'Deleted-history wallet',
+      type: 'CASH',
+      openingBalance: 0,
+      openingBalanceDate: '2026-11-01',
+    });
+    const deletedTransaction = await TransactionModel.create({
+      userId,
+      amountPaise: 100,
+      transactionDate: new Date('2026-11-02T00:00:00.000Z'),
+      type: 'EXPENSE',
+      categoryId: new Types.ObjectId(),
+      paymentMode: 'CASH',
+      accountId: new Types.ObjectId(String(account.id)),
+      isDeleted: true,
+    });
+
+    await expect(accountService.permanentlyDelete(userId.toString(), String(account.id)))
+      .resolves.toEqual({ id: String(account.id) });
+    expect(await AccountModel.findById(account.id)).toBeNull();
+    expect(await TransactionModel.findById(deletedTransaction._id)).toBeNull();
+  });
 });

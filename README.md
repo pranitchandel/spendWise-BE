@@ -17,12 +17,12 @@ The API listens on `http://localhost:4000`; health is available at `/api/v1/heal
 
 ## Deploy On Render
 
-Create a new Web Service from this repository and use `render.yaml` as the Blueprint configuration. Set these environment variables in Render:
+Create a new Web Service from this repository and use `render.yaml` as the Blueprint configuration. The Dockerfile is at the repository root, and the Docker build context is `.`. If configuring the service manually, set the Dockerfile path to `./Dockerfile` and the Docker context directory to `.`; do not set a nested `Backend` root directory. Set these environment variables in Render:
 
 - `MONGODB_URI`: MongoDB connection string. Use a replica set because transaction endpoints require MongoDB transactions.
 - `CORS_ORIGIN`: Comma-separated frontend origin(s), without a trailing slash.
 
-Render generates the JWT secrets from the Blueprint configuration. The service builds with `npm ci && npm run build`, starts with `npm start`, and uses `/api/v1/health` for health checks.
+Render generates the JWT secrets from the Blueprint configuration. The Dockerfile builds and starts the API and configures `/api/v1/health` as its container health check.
 
 ## Scripts
 

@@ -2,6 +2,7 @@ import { ConflictError, NotFoundError, ValidationError } from '../../shared/erro
 import { BUDGET_THRESHOLDS } from '../../shared/constants/index.js';
 import { endOfMonthIST, nowInIST, startOfMonthIST } from '../../shared/utils/date.js';
 import { addPaise, percentage, subtractPaise, toPaise, toRupees } from '../../shared/utils/money.js';
+import { CategoryModel } from '../categories/category.model.js';
 import { TransactionModel } from '../transactions/transaction.model.js';
 import { MonthlyBudgetModel } from './budget.model.js';
 
@@ -21,6 +22,50 @@ export async function getBudget(userId: string, year: number, month: number) {
 export async function listBudgets(userId: string) {
   const budgets = await MonthlyBudgetModel.find({ userId }).sort({ year: -1, month: -1 });
   return Promise.all(budgets.map((b) => enrichBudget(userId, b)));
+}
+
+export async function getMonthlySpendingByCategory(userId: string, year: number, month: number) {
+  const from = startOfMonthIST(year, month);
+  const to = endOfMonthIST(year, month);
+  const [transactions, categories] = await Promise.all([
+    TransactionModel.find({
+      userId,
+      isDeleted: false,
+      transactionDate: { $gte: from, $lte: to },
+      type: { $in: ['EXPENSE', 'REFUND'] },
+    }).select('type amountPaise categoryId'),
+    CategoryModel.find({ userId }).select('_id name icon color isArchived').lean(),
+  ]);
+
+  const categoryById = new Map(categories.map((category) => [category._id.toString(), category]));
+  const spending = new Map<string, { spentPaise: number; expenseCount: number }>();
+  for (const transaction of transactions) {
+    const categoryId = transaction.categoryId.toString();
+    const current = spending.get(categoryId) ?? { spentPaise: 0, expenseCount: 0 };
+    if (transaction.type === 'EXPENSE') {
+      current.spentPaise = addPaise(current.spentPaise, transaction.amountPaise);
+      current.expenseCount += 1;
+    } else {
+      current.spentPaise = subtractPaise(current.spentPaise, transaction.amountPaise);
+    }
+    spending.set(categoryId, current);
+  }
+
+  return [...spending.entries()]
+    .filter(([, value]) => value.expenseCount > 0)
+    .map(([categoryId, value]) => {
+      const category = categoryById.get(categoryId);
+      return {
+        categoryId,
+        categoryName: category?.name ?? 'Deleted category',
+        icon: category?.icon ?? 'circle',
+        color: category?.color ?? '#64748B',
+        isArchived: category?.isArchived ?? true,
+        actualSpent: toRupees(Math.max(0, value.spentPaise)),
+        transactionCount: value.expenseCount,
+      };
+    })
+    .sort((a, b) => b.actualSpent - a.actualSpent);
 }
 
 export async function createBudget(

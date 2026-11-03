@@ -49,4 +49,13 @@ export const categoryController = {
       return next(err);
     }
   },
+
+  async permanentlyDelete(req: Request, res: Response, next: NextFunction) {
+    try {
+      const data = await categoryService.permanentlyDelete(uid(req), req.params.id as string);
+      return sendSuccess(res, data);
+    } catch (err) {
+      return next(err);
+    }
+  },
 };

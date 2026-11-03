@@ -3,6 +3,7 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { AccountModel } from '../../src/modules/accounts/account.model.js';
 import { accountService } from '../../src/modules/accounts/account.service.js';
+import { BorrowingRecordModel } from '../../src/modules/borrowing/borrowing.model.js';
 import { CategoryModel } from '../../src/modules/categories/category.model.js';
 import { LendingRecordModel } from '../../src/modules/lending/lending.model.js';
 import { RepaymentModel } from '../../src/modules/repayments/repayment.model.js';
@@ -15,6 +16,7 @@ let accountId: string;
 let destinationAccountId: string;
 let expenseCategoryId: string;
 let lendingCategoryId: string;
+let borrowingCategoryId: string;
 let transferCategoryId: string;
 
 beforeAll(async () => {
@@ -22,6 +24,7 @@ beforeAll(async () => {
   await mongoose.connect(replicaSet.getUri());
   await Promise.all([
     AccountModel.init(),
+    BorrowingRecordModel.init(),
     CategoryModel.init(),
     LendingRecordModel.init(),
     RepaymentModel.init(),
@@ -37,6 +40,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await Promise.all([
     AccountModel.deleteMany({}),
+    BorrowingRecordModel.deleteMany({}),
     CategoryModel.deleteMany({}),
     LendingRecordModel.deleteMany({}),
     RepaymentModel.deleteMany({}),
@@ -62,11 +66,13 @@ beforeEach(async () => {
   const categories = await CategoryModel.create([
     { userId, name: 'Groceries', type: 'EXPENSE' },
     { userId, name: 'Loans given', type: 'LENDING' },
+    { userId, name: 'Loans received', type: 'BORROWING' },
     { userId, name: 'Transfers', type: 'TRANSFER' },
   ]);
   expenseCategoryId = categories[0]._id.toString();
   lendingCategoryId = categories[1]._id.toString();
-  transferCategoryId = categories[2]._id.toString();
+  borrowingCategoryId = categories[2]._id.toString();
+  transferCategoryId = categories[3]._id.toString();
 });
 
 describe('transaction CRUD consistency', () => {
@@ -111,7 +117,8 @@ describe('transaction CRUD consistency', () => {
     record = await LendingRecordModel.findById(lent.linkedRecordId);
     expect(record?.outstandingPaise).toBe(10_000);
     expect(record?.totalRepaidPaise).toBe(0);
-    expect(await RepaymentModel.countDocuments({ transactionId: repayment.id, isDeleted: false })).toBe(0);
+    expect(await RepaymentModel.countDocuments({ transactionId: repayment.id })).toBe(0);
+    expect(await TransactionModel.findById(repayment.id)).toBeNull();
   });
 
   it('deletes ordinary transactions and rejects deleting a parent with outstanding repayment history', async () => {
@@ -120,6 +127,7 @@ describe('transaction CRUD consistency', () => {
       paymentMode: 'CASH', accountId,
     });
     expect(await deleteTransaction(userId.toString(), expense.id)).toEqual({ deleted: true });
+    expect(await TransactionModel.findById(expense.id)).toBeNull();
 
     const lent = await createTransaction(userId.toString(), {
       type: 'LENDING', amount: 100, transactionDate: '2026-11-03', categoryId: lendingCategoryId,
@@ -130,6 +138,28 @@ describe('transaction CRUD consistency', () => {
       paymentMode: 'CASH', accountId, linkedRecordId: lent.linkedRecordId,
     });
     await expect(deleteTransaction(userId.toString(), lent.id)).rejects.toThrow('existing repayments');
+  });
+
+  it('deletes borrowing and its repayment transaction records while restoring outstanding', async () => {
+    const borrowed = await createTransaction(userId.toString(), {
+      type: 'BORROWING', amount: 100, transactionDate: '2026-11-03', categoryId: borrowingCategoryId,
+      paymentMode: 'CASH', accountId, personName: 'Jordan',
+    });
+    const repayment = await createTransaction(userId.toString(), {
+      type: 'BORROWING_REPAYMENT', amount: 35, transactionDate: '2026-11-04', categoryId: borrowingCategoryId,
+      paymentMode: 'CASH', accountId, linkedRecordId: borrowed.linkedRecordId,
+    });
+
+    await deleteTransaction(userId.toString(), repayment.id);
+    const record = await BorrowingRecordModel.findById(borrowed.linkedRecordId);
+    expect(record?.outstandingPaise).toBe(10_000);
+    expect(record?.totalRepaidPaise).toBe(0);
+    expect(await RepaymentModel.findOne({ transactionId: repayment.id })).toBeNull();
+    expect(await TransactionModel.findById(repayment.id)).toBeNull();
+
+    await deleteTransaction(userId.toString(), borrowed.id);
+    expect(await BorrowingRecordModel.findById(borrowed.linkedRecordId)).toBeNull();
+    expect(await TransactionModel.findById(borrowed.id)).toBeNull();
   });
 
   it('updates refunds without exceeding their original expense and releases the hold on delete', async () => {
@@ -148,6 +178,7 @@ describe('transaction CRUD consistency', () => {
     await expect(updateTransaction(userId.toString(), refund.id, { amount: 101 })).rejects.toThrow('Refund exceeds');
 
     await deleteTransaction(userId.toString(), refund.id);
+    expect(await TransactionModel.findById(refund.id)).toBeNull();
     const afterDelete = await TransactionModel.findById(expense.id);
     expect(afterDelete?.refundedPaise).toBe(0);
   });

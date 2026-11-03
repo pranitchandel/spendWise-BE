@@ -3,7 +3,7 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { AccountModel } from '../../src/modules/accounts/account.model.js';
 import { CategoryModel } from '../../src/modules/categories/category.model.js';
-import { getBudget, createBudget } from '../../src/modules/budgets/budget.service.js';
+import { getBudget, createBudget, getMonthlySpendingByCategory } from '../../src/modules/budgets/budget.service.js';
 import { TransactionModel } from '../../src/modules/transactions/transaction.model.js';
 import { createTransaction } from '../../src/modules/transactions/transaction.service.js';
 
@@ -89,5 +89,35 @@ describe('monthly budget expense actuals', () => {
     const budget = await getBudget(userId.toString(), 2026, 11);
     expect(budget?.items[0].actualSpent).toBe(0);
     expect(budget?.summary.totalSpent).toBe(0);
+  });
+
+  it('lists spending for categories without budgets and subtracts refunds', async () => {
+    const diningCategory = await CategoryModel.create({ userId, name: 'Dining out', type: 'EXPENSE' });
+    const expense = await createTransaction(userId.toString(), {
+      type: 'EXPENSE',
+      amount: 1_500,
+      transactionDate: '2026-11-03',
+      categoryId: diningCategory._id.toString(),
+      paymentMode: 'CASH',
+      accountId,
+    });
+    await createTransaction(userId.toString(), {
+      type: 'REFUND',
+      amount: 300,
+      transactionDate: '2026-11-04',
+      categoryId: diningCategory._id.toString(),
+      paymentMode: 'CASH',
+      accountId,
+      linkedTransactionId: expense.id,
+    });
+
+    const spending = await getMonthlySpendingByCategory(userId.toString(), 2026, 11);
+
+    expect(spending).toContainEqual(expect.objectContaining({
+      categoryId: diningCategory._id.toString(),
+      categoryName: 'Dining out',
+      actualSpent: 1_200,
+      transactionCount: 1,
+    }));
   });
 });

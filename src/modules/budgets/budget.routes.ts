@@ -22,6 +22,17 @@ budgetRouter.get('/', async (req, res, next) => {
   }
 });
 
+budgetRouter.get('/:year/:month/actuals', async (req, res, next) => {
+  try {
+    const year = Number(req.params.year);
+    const month = Number(req.params.month);
+    const data = await service.getMonthlySpendingByCategory(req.user!.userId, year, month);
+    return sendSuccess(res, data);
+  } catch (err) {
+    return next(err);
+  }
+});
+
 budgetRouter.get('/:year/:month', async (req, res, next) => {
   try {
     const year = Number(req.params.year);

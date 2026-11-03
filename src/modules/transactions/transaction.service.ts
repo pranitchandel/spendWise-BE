@@ -15,6 +15,7 @@ import { LendingRecordModel } from '../lending/lending.model.js';
 import { BorrowingRecordModel } from '../borrowing/borrowing.model.js';
 import { RepaymentModel } from '../repayments/repayment.model.js';
 import { PersonModel } from '../people/person.model.js';
+import { RecurringOccurrenceModel } from '../recurring/recurring.model.js';
 import { TransactionModel } from './transaction.model.js';
 import { toTransactionDto } from './transaction.mapper.js';
 import type {
@@ -710,12 +711,15 @@ export async function deleteTransaction(userId: string, id: string) {
         record.status = record.totalRepaidPaise > 0 ? 'PARTIALLY_REPAID' : 'ACTIVE';
         await record.save({ session });
       }
-      repayment.isDeleted = true;
-      await repayment.save({ session });
+      await RepaymentModel.deleteOne({ _id: repayment._id, userId }).session(session);
     }
 
-    tx.isDeleted = true;
-    await tx.save({ session });
+    await RecurringOccurrenceModel.updateOne(
+      { userId, transactionId: tx._id, status: 'PAID' },
+      { $set: { status: 'PENDING', transactionId: null } },
+      { session },
+    );
+    await TransactionModel.deleteOne({ _id: tx._id, userId }).session(session);
     await session.commitTransaction();
     return { deleted: true };
   } catch (err) {

@@ -121,6 +121,7 @@ export const accountService = {
     const references = await Promise.all([
       TransactionModel.countDocuments({
         userId: ownerId,
+        isDeleted: false,
         $or: [{ accountId }, { toAccountId: accountId }],
       }),
       RecurringRuleModel.countDocuments({
@@ -129,13 +130,21 @@ export const accountService = {
       }),
       LendingRecordModel.countDocuments({ userId: ownerId, sourceAccountId: accountId }),
       BorrowingRecordModel.countDocuments({ userId: ownerId, receivingAccountId: accountId }),
-      RepaymentModel.countDocuments({ userId: ownerId, accountId }),
+      RepaymentModel.countDocuments({ userId: ownerId, accountId, isDeleted: false }),
     ]);
 
     if (references.some((count) => count > 0)) {
       throw new ConflictError('This account has linked financial history or schedules. Archive it instead.');
     }
 
+    await Promise.all([
+      TransactionModel.deleteMany({
+        userId: ownerId,
+        isDeleted: true,
+        $or: [{ accountId }, { toAccountId: accountId }],
+      }),
+      RepaymentModel.deleteMany({ userId: ownerId, accountId, isDeleted: true }),
+    ]);
     await AccountModel.deleteOne({ _id: accountId, userId: ownerId });
     return { id };
   },

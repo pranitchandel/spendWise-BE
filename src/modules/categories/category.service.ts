@@ -9,6 +9,9 @@ import {
 import { ConflictError, NotFoundError } from '../../shared/errors/AppError.js';
 import { toObjectId } from '../../shared/utils/mongo.js';
 import { serializeDoc } from '../../shared/utils/serializers.js';
+import { MonthlyBudgetModel } from '../budgets/budget.model.js';
+import { RecurringRuleModel } from '../recurring/recurring.model.js';
+import { TransactionModel } from '../transactions/transaction.model.js';
 import { CategoryModel } from './category.model.js';
 
 export async function seedDefaultCategories(userId: string, session?: ClientSession) {
@@ -67,13 +70,20 @@ export const categoryService = {
     id: string,
     input: Partial<{ name: string; icon: string; color: string; isArchived: boolean }>,
   ) {
-    const updated = await CategoryModel.findOneAndUpdate(
-      { _id: toObjectId(id), userId: toObjectId(userId, 'userId') },
-      { $set: input },
-      { new: true },
-    );
-    if (!updated) throw new NotFoundError('Category');
-    return serializeDoc(updated);
+    try {
+      const updated = await CategoryModel.findOneAndUpdate(
+        { _id: toObjectId(id), userId: toObjectId(userId, 'userId') },
+        { $set: input },
+        { new: true, runValidators: true },
+      );
+      if (!updated) throw new NotFoundError('Category');
+      return serializeDoc(updated);
+    } catch (err: unknown) {
+      if ((err as { code?: number }).code === 11000) {
+        throw new ConflictError('Category with this name and type already exists');
+      }
+      throw err;
+    }
   },
 
   async remove(userId: string, id: string) {
@@ -84,6 +94,26 @@ export const categoryService = {
     );
     if (!updated) throw new NotFoundError('Category');
     return serializeDoc(updated);
+  },
+
+  async permanentlyDelete(userId: string, id: string) {
+    const ownerId = toObjectId(userId, 'userId');
+    const categoryId = toObjectId(id, 'categoryId');
+    const category = await CategoryModel.findOne({ _id: categoryId, userId: ownerId }).lean();
+    if (!category) throw new NotFoundError('Category');
+
+    const references = await Promise.all([
+      TransactionModel.countDocuments({ userId: ownerId, categoryId, isDeleted: false }),
+      MonthlyBudgetModel.countDocuments({ userId: ownerId, 'items.categoryId': categoryId }),
+      RecurringRuleModel.countDocuments({ userId: ownerId, categoryId }),
+    ]);
+    if (references.some((count) => count > 0)) {
+      throw new ConflictError('Category is used by transactions, budgets, or recurring schedules. Archive it instead.');
+    }
+
+    await TransactionModel.deleteMany({ userId: ownerId, categoryId, isDeleted: true });
+    await CategoryModel.deleteOne({ _id: categoryId, userId: ownerId });
+    return { id };
   },
 
   async getOwned(userId: string, id: string) {

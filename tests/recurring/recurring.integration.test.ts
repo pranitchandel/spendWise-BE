@@ -13,6 +13,7 @@ import {
   updateOccurrence,
 } from '../../src/modules/recurring/recurring.service.js';
 import { TransactionModel } from '../../src/modules/transactions/transaction.model.js';
+import { deleteTransaction } from '../../src/modules/transactions/transaction.service.js';
 
 let replicaSet: MongoMemoryReplSet;
 let userId: Types.ObjectId;
@@ -132,6 +133,25 @@ describe('recurring transaction occurrences', () => {
     expect(updated.occurrences[0].status).toBe('PAID');
     expect(updated.occurrences[0].paidTransactionId).toBeTruthy();
     expect(await TransactionModel.countDocuments({ userId, type: 'EXPENSE' })).toBe(1);
+  });
+
+  it('returns a recurring occurrence to pending when its transaction is deleted', async () => {
+    const rule = await createMonthlyRule();
+    await generateOccurrences(userId.toString(), '2026-11-30');
+    const [pendingRule] = await listRecurring(userId.toString());
+    const occurrence = pendingRule.occurrences[0];
+    const paidRule = await updateOccurrence(userId.toString(), rule.id, occurrence.id, {
+      action: 'PAID',
+      accountId,
+      paymentMode: 'UPI',
+    });
+    const transactionId = paidRule.occurrences[0].paidTransactionId!;
+
+    await deleteTransaction(userId.toString(), transactionId);
+
+    const [updatedRule] = await listRecurring(userId.toString());
+    expect(updatedRule.occurrences[0]).toMatchObject({ status: 'PENDING', paidTransactionId: null });
+    expect(await TransactionModel.findById(transactionId)).toBeNull();
   });
 
   it('keeps month-end schedules anchored to their original day', async () => {

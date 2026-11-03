@@ -21,6 +21,11 @@ categoryRoutes.put(
   categoryController.update,
 );
 categoryRoutes.delete(
+  '/:id/permanent',
+  validate(categoryIdParamsSchema, 'params'),
+  categoryController.permanentlyDelete,
+);
+categoryRoutes.delete(
   '/:id',
   validate(categoryIdParamsSchema, 'params'),
   categoryController.remove,
