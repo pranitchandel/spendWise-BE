@@ -1,9 +1,10 @@
-import { NotFoundError } from '../../shared/errors/AppError.js';
-import { nowInIST } from '../../shared/utils/date.js';
+import { ConflictError, NotFoundError } from '../../shared/errors/AppError.js';
+import { formatDateIST, nowInIST } from '../../shared/utils/date.js';
 import { toRupees } from '../../shared/utils/money.js';
 import { BorrowingRecordModel } from './borrowing.model.js';
 import { RepaymentModel } from '../repayments/repayment.model.js';
-import { createTransaction } from '../transactions/transaction.service.js';
+import { createTransaction, deleteTransaction, updateTransaction } from '../transactions/transaction.service.js';
+import { TransactionModel } from '../transactions/transaction.model.js';
 import type { CreateTransactionInput } from '../transactions/transaction.types.js';
 
 function toBorrowingDto(record: {
@@ -37,10 +38,10 @@ function toBorrowingDto(record: {
     phone: record.phone ?? '',
     email: record.email ?? '',
     originalAmount: toRupees(record.originalAmountPaise),
-    borrowingDate: record.borrowingDate.toISOString().slice(0, 10),
+    borrowingDate: formatDateIST(record.borrowingDate),
     receivingAccountId: record.receivingAccountId.toString(),
     expectedRepaymentDate: record.expectedRepaymentDate
-      ? record.expectedRepaymentDate.toISOString().slice(0, 10)
+      ? formatDateIST(record.expectedRepaymentDate)
       : null,
     interestRate: record.interestRate ?? null,
     repaymentTerms: record.repaymentTerms ?? '',
@@ -63,25 +64,82 @@ export async function listBorrowing(userId: string, status?: string) {
 export async function getBorrowing(userId: string, id: string) {
   const record = await BorrowingRecordModel.findOne({ _id: id, userId });
   if (!record) throw new NotFoundError('Borrowing record');
-  const repayments = await RepaymentModel.find({
-    userId,
-    recordType: 'BORROWING',
-    recordId: id,
-    isDeleted: false,
-  }).sort({ repaymentDate: -1 });
+  const [repayments, transaction] = await Promise.all([
+    RepaymentModel.find({
+      userId,
+      recordType: 'BORROWING',
+      recordId: id,
+      isDeleted: false,
+    }).sort({ repaymentDate: -1 }),
+    TransactionModel.findOne({ _id: record.linkedTransactionId, userId }).select('categoryId paymentMode'),
+  ]);
 
   return {
     ...toBorrowingDto(record),
+    categoryId: transaction?.categoryId.toString() ?? '',
+    paymentMode: transaction?.paymentMode ?? 'UPI',
     repayments: repayments.map((r) => ({
       id: r._id.toString(),
       amount: toRupees(r.amountPaise),
       interest: toRupees(r.interestPaise),
       accountId: r.accountId.toString(),
       transactionId: r.transactionId.toString(),
-      repaymentDate: r.repaymentDate.toISOString().slice(0, 10),
+      repaymentDate: formatDateIST(r.repaymentDate),
       notes: r.notes,
     })),
   };
+}
+
+export async function updateBorrowing(
+  userId: string,
+  id: string,
+  input: {
+    personName: string;
+    phone?: string;
+    email?: string;
+    amount: number;
+    transactionDate: string;
+    accountId: string;
+    categoryId: string;
+    paymentMode: CreateTransactionInput['paymentMode'];
+    expectedRepaymentDate?: string | null;
+    interestRate?: number | null;
+    repaymentTerms?: string;
+    notes?: string;
+  },
+) {
+  const record = await BorrowingRecordModel.findOne({ _id: id, userId });
+  if (!record) throw new NotFoundError('Borrowing record');
+  const hasRepayments = await RepaymentModel.exists({
+    userId,
+    recordType: 'BORROWING',
+    recordId: record._id,
+    isDeleted: false,
+  });
+  if (hasRepayments || record.totalRepaidPaise > 0 || record.totalInterestPaidPaise > 0) {
+    throw new ConflictError('Borrowing records with repayment history cannot be edited.');
+  }
+  await updateTransaction(userId, record.linkedTransactionId.toString(), {
+    personName: input.personName,
+    phone: input.phone,
+    email: input.email,
+    amount: input.amount,
+    transactionDate: input.transactionDate,
+    accountId: input.accountId,
+    categoryId: input.categoryId,
+    paymentMode: input.paymentMode,
+    expectedRepaymentDate: input.expectedRepaymentDate,
+    interestRate: input.interestRate,
+    repaymentTerms: input.repaymentTerms,
+    note: input.notes,
+  });
+  return getBorrowing(userId, id);
+}
+
+export async function deleteBorrowing(userId: string, id: string) {
+  const record = await BorrowingRecordModel.findOne({ _id: id, userId });
+  if (!record) throw new NotFoundError('Borrowing record');
+  return deleteTransaction(userId, record.linkedTransactionId.toString());
 }
 
 export async function addRepayment(

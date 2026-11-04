@@ -42,6 +42,37 @@ borrowingRouter.post('/', validate(createTransactionSchema), async (req, res, ne
   }
 });
 
+borrowingRouter.put('/:id', validate(z.object({
+  personName: z.string().trim().min(1).max(120),
+  phone: z.string().max(40).optional(),
+  email: z.string().email().or(z.literal('')).optional(),
+  amount: z.number().positive(),
+  transactionDate: z.string().min(1),
+  accountId: z.string().min(1),
+  categoryId: z.string().min(1),
+  paymentMode: z.enum(PAYMENT_MODES),
+  expectedRepaymentDate: z.string().nullable().optional(),
+  interestRate: z.number().min(0).nullable().optional(),
+  repaymentTerms: z.string().max(2000).optional(),
+  notes: z.string().max(2000).optional(),
+})), async (req, res, next) => {
+  try {
+    const data = await service.updateBorrowing(req.user!.userId, req.params.id as string, req.body);
+    return sendSuccess(res, data);
+  } catch (err) {
+    return next(err);
+  }
+});
+
+borrowingRouter.delete('/:id', async (req, res, next) => {
+  try {
+    const data = await service.deleteBorrowing(req.user!.userId, req.params.id as string);
+    return sendSuccess(res, data);
+  } catch (err) {
+    return next(err);
+  }
+});
+
 borrowingRouter.get('/:id', async (req, res, next) => {
   try {
     const data = await service.getBorrowing(req.user!.userId, req.params.id as string);

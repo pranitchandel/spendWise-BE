@@ -19,6 +19,8 @@ export function toTransactionDto(tx: {
   linkedRecordId?: { toString(): string } | null;
   linkedRecordType?: string | null;
   linkedTransactionId?: { toString(): string } | null;
+  plannedExpenseId?: { toString(): string } | null;
+  plannedExpenseItemId?: string | null;
   transferGroupId?: string | null;
   isCreditCardBillPayment?: boolean;
   createdAt?: Date;
@@ -45,6 +47,8 @@ export function toTransactionDto(tx: {
     linkedTransactionId: tx.linkedTransactionId
       ? tx.linkedTransactionId.toString()
       : null,
+    plannedExpenseId: tx.plannedExpenseId?.toString() ?? null,
+    plannedExpenseItemId: tx.plannedExpenseItemId ?? null,
     transferGroupId: tx.transferGroupId ?? null,
     isCreditCardBillPayment: tx.isCreditCardBillPayment ?? false,
     createdAt: tx.createdAt?.toISOString(),

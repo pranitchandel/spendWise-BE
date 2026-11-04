@@ -22,6 +22,7 @@ export const createTransactionSchema = z.object({
   interestAmount: z.number().min(0).optional(),
   expectedRepaymentDate: z.string().optional().nullable(),
   interestRate: z.number().optional().nullable(),
+  repaymentTerms: z.string().max(2000).optional(),
   isCreditCardBillPayment: z.boolean().optional(),
   idempotencyKey: z.string().max(128).optional(),
 });

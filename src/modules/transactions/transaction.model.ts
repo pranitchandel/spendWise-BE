@@ -25,6 +25,8 @@ const transactionSchema = new Schema(
       default: null,
     },
     linkedTransactionId: { type: Schema.Types.ObjectId, ref: 'Transaction', default: null },
+    plannedExpenseId: { type: Schema.Types.ObjectId, ref: 'PlannedExpense', default: null },
+    plannedExpenseItemId: { type: String, default: null },
     transferGroupId: { type: String, default: null },
     isCreditCardBillPayment: { type: Boolean, default: false },
     idempotencyKey: { type: String, default: null },
@@ -38,6 +40,7 @@ transactionSchema.index({ userId: 1, type: 1 });
 transactionSchema.index({ userId: 1, categoryId: 1 });
 transactionSchema.index({ userId: 1, accountId: 1 });
 transactionSchema.index({ userId: 1, linkedRecordId: 1 });
+transactionSchema.index({ userId: 1, plannedExpenseId: 1, plannedExpenseItemId: 1, isDeleted: 1 });
 transactionSchema.index({ userId: 1, isDeleted: 1, transactionDate: -1 });
 transactionSchema.index(
   { userId: 1, idempotencyKey: 1 },

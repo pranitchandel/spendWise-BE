@@ -16,7 +16,8 @@ import { BorrowingRecordModel } from '../borrowing/borrowing.model.js';
 import { RepaymentModel } from '../repayments/repayment.model.js';
 import { PersonModel } from '../people/person.model.js';
 import { RecurringOccurrenceModel } from '../recurring/recurring.model.js';
-import { TransactionModel } from './transaction.model.js';
+import { PlannedExpenseModel } from '../planned-expenses/planned-expense.model.js';
+import { TransactionModel, type TransactionDocument } from './transaction.model.js';
 import { toTransactionDto } from './transaction.mapper.js';
 import type {
   CreateTransactionInput,
@@ -40,6 +41,79 @@ async function assertCategory(userId: string, categoryId: string, session?: mong
   }).session(session ?? null);
   if (!category) throw new NotFoundError('Category');
   return category;
+}
+
+async function assertCampaignAllowsTransactionChange(
+  userId: string,
+  transaction: Pick<TransactionDocument, 'plannedExpenseId' | 'linkedTransactionId' | 'type'>,
+  session?: mongoose.ClientSession,
+) {
+  let campaignId = transaction.plannedExpenseId?.toString();
+  if (!campaignId && transaction.type === 'REFUND' && transaction.linkedTransactionId) {
+    const original = await TransactionModel.findOne({
+      _id: transaction.linkedTransactionId,
+      userId,
+      type: 'EXPENSE',
+    }).select('plannedExpenseId').session(session ?? null);
+    campaignId = original?.plannedExpenseId?.toString();
+  }
+  if (!campaignId) return;
+
+  const campaign = await PlannedExpenseModel.findOne({
+    _id: campaignId,
+    userId,
+    status: 'PLANNED',
+  }).session(session ?? null);
+  if (!campaign) {
+    throw new ConflictError('Reopen the campaign before editing or deleting its linked transactions.');
+  }
+}
+
+async function serializeTransactionsWithCampaignStatus(userId: string, transactions: TransactionDocument[]) {
+  if (!transactions.length) return [];
+
+  const campaignByTransactionId = new Map<string, string>();
+  const refundOriginalIds: mongoose.Types.ObjectId[] = [];
+  for (const transaction of transactions) {
+    if (transaction.plannedExpenseId) {
+      campaignByTransactionId.set(transaction._id.toString(), transaction.plannedExpenseId.toString());
+    } else if (transaction.type === 'REFUND' && transaction.linkedTransactionId) {
+      refundOriginalIds.push(transaction.linkedTransactionId);
+    }
+  }
+
+  if (refundOriginalIds.length) {
+    const originals = await TransactionModel.find({
+      _id: { $in: refundOriginalIds },
+      userId,
+      type: 'EXPENSE',
+    }).select('_id plannedExpenseId').lean();
+    const campaignByOriginalId = new Map(
+      originals
+        .filter((original) => original.plannedExpenseId)
+        .map((original) => [original._id.toString(), original.plannedExpenseId!.toString()]),
+    );
+    for (const transaction of transactions) {
+      if (transaction.type !== 'REFUND' || !transaction.linkedTransactionId) continue;
+      const campaignId = campaignByOriginalId.get(transaction.linkedTransactionId.toString());
+      if (campaignId) campaignByTransactionId.set(transaction._id.toString(), campaignId);
+    }
+  }
+
+  const campaignIds = [...new Set(campaignByTransactionId.values())].map((id) => new mongoose.Types.ObjectId(id));
+  const campaigns = campaignIds.length
+    ? await PlannedExpenseModel.find({ _id: { $in: campaignIds }, userId }).select('_id status').lean()
+    : [];
+  const statusByCampaignId = new Map(campaigns.map((campaign) => [campaign._id.toString(), campaign.status]));
+
+  return transactions.map((transaction) => {
+    const campaignId = campaignByTransactionId.get(transaction._id.toString());
+    return {
+      ...toTransactionDto(transaction),
+      plannedExpenseId: campaignId ?? transaction.plannedExpenseId?.toString() ?? null,
+      plannedExpenseStatus: campaignId ? statusByCampaignId.get(campaignId) ?? null : null,
+    };
+  });
 }
 
 async function resolvePerson(
@@ -74,6 +148,7 @@ export async function createTransaction(
   input: CreateTransactionInput,
   idempotencyKey?: string,
   transactionSession?: mongoose.ClientSession,
+  plannedExpenseLink?: { plannedExpenseId: string; plannedExpenseItemId: string },
 ) {
   const key = idempotencyKey ?? input.idempotencyKey;
   if (key) {
@@ -172,6 +247,10 @@ export async function createTransaction(
           tags: input.tags ?? [],
           personId: person?._id ?? null,
           linkedTransactionId: input.linkedTransactionId ?? null,
+          plannedExpenseId: plannedExpenseLink
+            ? new mongoose.Types.ObjectId(plannedExpenseLink.plannedExpenseId)
+            : null,
+          plannedExpenseItemId: plannedExpenseLink?.plannedExpenseItemId ?? null,
           transferGroupId,
           isCreditCardBillPayment: input.isCreditCardBillPayment ?? false,
           idempotencyKey: key ?? null,
@@ -227,6 +306,7 @@ export async function createTransaction(
               ? startOfDayIST(input.expectedRepaymentDate)
               : null,
             interestRate: input.interestRate ?? null,
+            repaymentTerms: input.repaymentTerms ?? '',
             notes: input.note ?? '',
             status: 'ACTIVE',
             outstandingPaise: amountPaise,
@@ -439,7 +519,7 @@ export async function listTransactions(userId: string, query: ListTransactionsQu
   ]);
 
   return {
-    items: items.map(toTransactionDto),
+    items: await serializeTransactionsWithCampaignStatus(userId, items),
     pagination: {
       page: query.page,
       limit: query.limit,
@@ -452,7 +532,7 @@ export async function listTransactions(userId: string, query: ListTransactionsQu
 export async function getTransaction(userId: string, id: string) {
   const tx = await TransactionModel.findOne({ _id: id, userId, isDeleted: false });
   if (!tx) throw new NotFoundError('Transaction');
-  return toTransactionDto(tx);
+  return (await serializeTransactionsWithCampaignStatus(userId, [tx]))[0];
 }
 
 export async function updateTransaction(
@@ -465,6 +545,7 @@ export async function updateTransaction(
   try {
     const tx = await TransactionModel.findOne({ _id: id, userId, isDeleted: false }).session(session);
     if (!tx) throw new NotFoundError('Transaction');
+    await assertCampaignAllowsTransactionChange(userId, tx, session);
 
     const oldAmountPaise = tx.amountPaise;
     const nextAmountPaise = input.amount === undefined ? oldAmountPaise : toPaise(input.amount);
@@ -536,6 +617,15 @@ export async function updateTransaction(
       record.outstandingPaise = nextOutstanding;
       record.lendingDate = nextDate;
       record.sourceAccountId = new mongoose.Types.ObjectId(nextAccountId);
+      if (input.personName !== undefined) record.personName = input.personName.trim();
+      if (input.phone !== undefined) record.phone = input.phone;
+      if (input.email !== undefined) record.email = input.email;
+      if (input.expectedRepaymentDate !== undefined) {
+        record.expectedRepaymentDate = input.expectedRepaymentDate
+          ? startOfDayIST(input.expectedRepaymentDate)
+          : null;
+      }
+      if (input.interestRate !== undefined) record.interestRate = input.interestRate;
       if (input.description !== undefined) record.description = input.description;
       if (input.note !== undefined) record.notes = input.note;
       record.status = record.outstandingPaise === 0 ? 'REPAID' : record.totalRepaidPaise > 0 ? 'PARTIALLY_REPAID' : 'ACTIVE';
@@ -551,6 +641,16 @@ export async function updateTransaction(
       record.outstandingPaise = nextOutstanding;
       record.borrowingDate = nextDate;
       record.receivingAccountId = new mongoose.Types.ObjectId(nextAccountId);
+      if (input.personName !== undefined) record.lenderName = input.personName.trim();
+      if (input.phone !== undefined) record.phone = input.phone;
+      if (input.email !== undefined) record.email = input.email;
+      if (input.expectedRepaymentDate !== undefined) {
+        record.expectedRepaymentDate = input.expectedRepaymentDate
+          ? startOfDayIST(input.expectedRepaymentDate)
+          : null;
+      }
+      if (input.interestRate !== undefined) record.interestRate = input.interestRate;
+      if (input.repaymentTerms !== undefined) record.repaymentTerms = input.repaymentTerms;
       if (input.note !== undefined) record.notes = input.note;
       record.status = record.outstandingPaise === 0 ? 'REPAID' : record.totalRepaidPaise > 0 ? 'PARTIALLY_REPAID' : 'ACTIVE';
       await record.save({ session });
@@ -627,6 +727,7 @@ export async function deleteTransaction(userId: string, id: string) {
       session,
     );
     if (!tx) throw new NotFoundError('Transaction');
+    await assertCampaignAllowsTransactionChange(userId, tx, session);
 
     if (tx.type === 'EXPENSE') {
       const refund = await TransactionModel.findOne({
@@ -669,7 +770,7 @@ export async function deleteTransaction(userId: string, id: string) {
         _id: tx.linkedRecordId,
         userId,
       }).session(session);
-      if (record && record.totalRepaidPaise > 0) {
+      if (record && (record.totalRepaidPaise > 0 || record.totalInterestReceivedPaise > 0)) {
         throw new ConflictError('Cannot delete lending with existing repayments');
       }
       await LendingRecordModel.deleteOne({ _id: tx.linkedRecordId, userId }).session(session);
@@ -680,7 +781,7 @@ export async function deleteTransaction(userId: string, id: string) {
         _id: tx.linkedRecordId,
         userId,
       }).session(session);
-      if (record && record.totalRepaidPaise > 0) {
+      if (record && (record.totalRepaidPaise > 0 || record.totalInterestPaidPaise > 0)) {
         throw new ConflictError('Cannot delete borrowing with existing repayments');
       }
       await BorrowingRecordModel.deleteOne({ _id: tx.linkedRecordId, userId }).session(session);
