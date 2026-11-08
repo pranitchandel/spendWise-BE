@@ -28,4 +28,14 @@ export const userController = {
       return next(err);
     }
   },
+
+  async changePassword(req: Request, res: Response, next: NextFunction) {
+    try {
+      const user = requireUser(req);
+      const data = await userService.changePassword(user.userId, req.body);
+      return sendSuccess(res, data);
+    } catch (err) {
+      return next(err);
+    }
+  },
 };

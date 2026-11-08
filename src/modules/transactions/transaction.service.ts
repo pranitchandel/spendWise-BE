@@ -20,6 +20,7 @@ import { PlannedExpenseModel } from '../planned-expenses/planned-expense.model.j
 import { PlannedIncomeModel } from '../planned-incomes/planned-income.model.js';
 import { TransactionModel, type TransactionDocument } from './transaction.model.js';
 import { toTransactionDto } from './transaction.mapper.js';
+import { recordTransactionActivity } from '../activity-logs/activity-log.service.js';
 import type {
   CreateTransactionInput,
   ListTransactionsQuery,
@@ -394,6 +395,7 @@ export async function createTransaction(
       await tx.save({ session });
     }
 
+    await recordTransactionActivity(userId, { action: 'CREATED', after: toTransactionDto(tx) }, session);
     if (ownsSession) await session.commitTransaction();
     return toTransactionDto(tx);
   } catch (err) {
@@ -584,6 +586,7 @@ export async function updateTransaction(
   try {
     const tx = await TransactionModel.findOne({ _id: id, userId, isDeleted: false }).session(session);
     if (!tx) throw new NotFoundError('Transaction');
+    const before = toTransactionDto(tx);
     await assertCampaignAllowsTransactionChange(userId, tx, session);
     await assertSavingsAllowsTransactionChange(userId, tx, session);
     await assertPlannedIncomeAllowsTransactionChange(userId, tx, session);
@@ -758,6 +761,7 @@ export async function updateTransaction(
     if (input.note !== undefined) tx.note = input.note;
     if (input.tags !== undefined) tx.tags = input.tags;
     await tx.save({ session });
+    await recordTransactionActivity(userId, { action: 'UPDATED', before, after: toTransactionDto(tx) }, session);
     await session.commitTransaction();
     return toTransactionDto(tx);
   } catch (error) {
@@ -881,6 +885,7 @@ export async function deleteTransaction(userId: string, id: string) {
     );
     tx.isDeleted = true;
     await tx.save({ session });
+    await recordTransactionActivity(userId, { action: 'DELETED', before: toTransactionDto(tx) }, session);
     await session.commitTransaction();
     return { deleted: true };
   } catch (err) {

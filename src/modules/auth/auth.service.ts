@@ -123,8 +123,11 @@ export const authService = {
       throw new UnauthorizedError('Invalid refresh token');
     }
 
-    const newAccess = signAccessToken(payload.userId, payload.email);
-    const newRefresh = signRefreshToken(payload.userId, payload.email, payload.family);
+    const user = await authRepository.findUserById(payload.userId);
+    if (!user) throw new UnauthorizedError('User not found');
+
+    const newAccess = signAccessToken(payload.userId, user.email);
+    const newRefresh = signRefreshToken(payload.userId, user.email, payload.family);
     const newHash = sha256(newRefresh);
 
     await authRepository.revokeToken(tokenHash, newHash);
@@ -136,9 +139,6 @@ export const authService = {
       userAgent: meta.userAgent,
       ip: meta.ip,
     });
-
-    const user = await authRepository.findUserById(payload.userId);
-    if (!user) throw new UnauthorizedError('User not found');
 
     return {
       user: publicUser(user),

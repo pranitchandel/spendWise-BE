@@ -8,6 +8,7 @@ import { pinoHttp } from 'pino-http';
 import { env } from './config/env.js';
 import { errorMiddleware } from './middlewares/error.middleware.js';
 import { accountRoutes } from './modules/accounts/account.routes.js';
+import { activityLogRouter } from './modules/activity-logs/activity-log.routes.js';
 import { authRoutes } from './modules/auth/auth.routes.js';
 import { borrowingRouter } from './modules/borrowing/borrowing.routes.js';
 import { budgetRouter } from './modules/budgets/budget.routes.js';
@@ -65,6 +66,7 @@ export function createApp() {
   app.use('/api/v1/accounts', accountRoutes);
   app.use('/api/v1/categories', categoryRoutes);
   app.use('/api/v1/transactions', transactionRouter);
+  app.use('/api/v1/activity-logs', activityLogRouter);
   app.use('/api/v1/budgets', budgetRouter);
   app.use('/api/v1/lending', lendingRouter);
   app.use('/api/v1/borrowing', borrowingRouter);
