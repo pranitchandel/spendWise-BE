@@ -117,8 +117,8 @@ describe('transaction CRUD consistency', () => {
     record = await LendingRecordModel.findById(lent.linkedRecordId);
     expect(record?.outstandingPaise).toBe(10_000);
     expect(record?.totalRepaidPaise).toBe(0);
-    expect(await RepaymentModel.countDocuments({ transactionId: repayment.id })).toBe(0);
-    expect(await TransactionModel.findById(repayment.id)).toBeNull();
+    expect(await RepaymentModel.findOne({ transactionId: repayment.id })).toMatchObject({ isDeleted: true });
+    expect(await TransactionModel.findById(repayment.id)).toMatchObject({ isDeleted: true });
   });
 
   it('deletes ordinary transactions and rejects deleting a parent with outstanding repayment history', async () => {
@@ -127,7 +127,7 @@ describe('transaction CRUD consistency', () => {
       paymentMode: 'CASH', accountId,
     });
     expect(await deleteTransaction(userId.toString(), expense.id)).toEqual({ deleted: true });
-    expect(await TransactionModel.findById(expense.id)).toBeNull();
+    expect(await TransactionModel.findById(expense.id)).toMatchObject({ isDeleted: true });
 
     const lent = await createTransaction(userId.toString(), {
       type: 'LENDING', amount: 100, transactionDate: '2026-11-03', categoryId: lendingCategoryId,
@@ -154,12 +154,12 @@ describe('transaction CRUD consistency', () => {
     const record = await BorrowingRecordModel.findById(borrowed.linkedRecordId);
     expect(record?.outstandingPaise).toBe(10_000);
     expect(record?.totalRepaidPaise).toBe(0);
-    expect(await RepaymentModel.findOne({ transactionId: repayment.id })).toBeNull();
-    expect(await TransactionModel.findById(repayment.id)).toBeNull();
+    expect(await RepaymentModel.findOne({ transactionId: repayment.id })).toMatchObject({ isDeleted: true });
+    expect(await TransactionModel.findById(repayment.id)).toMatchObject({ isDeleted: true });
 
     await deleteTransaction(userId.toString(), borrowed.id);
-    expect(await BorrowingRecordModel.findById(borrowed.linkedRecordId)).toBeNull();
-    expect(await TransactionModel.findById(borrowed.id)).toBeNull();
+    expect(await BorrowingRecordModel.findById(borrowed.linkedRecordId)).toMatchObject({ isDeleted: true });
+    expect(await TransactionModel.findById(borrowed.id)).toMatchObject({ isDeleted: true });
   });
 
   it('updates refunds without exceeding their original expense and releases the hold on delete', async () => {
@@ -178,7 +178,7 @@ describe('transaction CRUD consistency', () => {
     await expect(updateTransaction(userId.toString(), refund.id, { amount: 101 })).rejects.toThrow('Refund exceeds');
 
     await deleteTransaction(userId.toString(), refund.id);
-    expect(await TransactionModel.findById(refund.id)).toBeNull();
+    expect(await TransactionModel.findById(refund.id)).toMatchObject({ isDeleted: true });
     const afterDelete = await TransactionModel.findById(expense.id);
     expect(afterDelete?.refundedPaise).toBe(0);
   });

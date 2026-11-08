@@ -12,6 +12,7 @@ const budgetSchema = new Schema(
           {
             categoryId: { type: Schema.Types.ObjectId, ref: 'Category', required: true },
             amountPaise: { type: Number, required: true, min: 0 },
+            isDeleted: { type: Boolean, default: false },
           },
           { _id: false },
         ),

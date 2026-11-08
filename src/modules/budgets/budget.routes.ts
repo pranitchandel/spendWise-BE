@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authMiddleware } from '../../middlewares/auth.middleware.js';
 import { validate } from '../../middlewares/validation.middleware.js';
+import { paginationSchema } from '../../shared/schemas/common.js';
 import { sendCreated, sendSuccess } from '../../shared/utils/api-response.js';
 import * as service from './budget.service.js';
 
@@ -13,9 +14,9 @@ const itemSchema = z.object({
   amount: z.number().min(0),
 });
 
-budgetRouter.get('/', async (req, res, next) => {
+budgetRouter.get('/', validate(paginationSchema.extend({ year: z.coerce.number().int().min(2000).optional() }), 'query'), async (req, res, next) => {
   try {
-    const data = await service.listBudgets(req.user!.userId);
+    const data = await service.listBudgets(req.user!.userId, res.locals.validatedQuery);
     return sendSuccess(res, data);
   } catch (err) {
     return next(err);

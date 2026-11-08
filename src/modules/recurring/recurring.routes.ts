@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { authMiddleware } from '../../middlewares/auth.middleware.js';
 import { validate } from '../../middlewares/validation.middleware.js';
 import { PAYMENT_MODES, RECURRING_FREQUENCIES } from '../../shared/constants/index.js';
+import { paginationSchema } from '../../shared/schemas/common.js';
 import { sendCreated, sendSuccess } from '../../shared/utils/api-response.js';
 import * as service from './recurring.service.js';
 
@@ -24,9 +25,11 @@ const ruleSchema = z.object({
   endDate: z.string().optional().nullable(),
 });
 
-recurringRouter.get('/', async (req, res, next) => {
+recurringRouter.get('/', validate(paginationSchema.extend({
+  includeInactive: z.union([z.literal('true'), z.literal('false')]).optional().transform((value) => value === 'true'),
+}), 'query'), async (req, res, next) => {
   try {
-    return sendSuccess(res, await service.listRecurring(req.user!.userId));
+    return sendSuccess(res, await service.listRecurring(req.user!.userId, res.locals.validatedQuery));
   } catch (error) {
     return next(error);
   }

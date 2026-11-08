@@ -10,13 +10,16 @@ const plannedExpenseSchema = new Schema(
     paidAmountPaise: { type: Number, required: true, default: 0, min: 0 },
     status: { type: String, enum: ['PLANNED', 'COMPLETED', 'CANCELLED'], default: 'PLANNED' },
     notes: { type: String, default: '' },
+    isDeleted: { type: Boolean, default: false },
     items: {
       type: [
         new Schema(
           {
             name: { type: String, required: true, trim: true },
             categoryId: { type: Schema.Types.ObjectId, ref: 'Category', required: true },
+            accountId: { type: Schema.Types.ObjectId, ref: 'Account', default: null },
             estimatedAmountPaise: { type: Number, required: true, min: 1 },
+            isDeleted: { type: Boolean, default: false },
           },
           { timestamps: true },
         ),

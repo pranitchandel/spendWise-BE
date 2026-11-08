@@ -5,8 +5,8 @@ import { AccountModel } from '../../src/modules/accounts/account.model.js';
 import { BorrowingRecordModel } from '../../src/modules/borrowing/borrowing.model.js';
 import { CategoryModel } from '../../src/modules/categories/category.model.js';
 import { LendingRecordModel } from '../../src/modules/lending/lending.model.js';
-import { addRepayment as addLendingRepayment, createLending, deleteLending, getLending, updateLending } from '../../src/modules/lending/lending.service.js';
-import { addRepayment as addBorrowingRepayment, deleteBorrowing, getBorrowing, updateBorrowing } from '../../src/modules/borrowing/borrowing.service.js';
+import { addRepayment as addLendingRepayment, createLending, deleteLending, getLending, listLending, updateLending } from '../../src/modules/lending/lending.service.js';
+import { addRepayment as addBorrowingRepayment, deleteBorrowing, getBorrowing, listBorrowing, updateBorrowing } from '../../src/modules/borrowing/borrowing.service.js';
 import { PersonModel } from '../../src/modules/people/person.model.js';
 import { RepaymentModel } from '../../src/modules/repayments/repayment.model.js';
 import { TransactionModel } from '../../src/modules/transactions/transaction.model.js';
@@ -65,6 +65,38 @@ beforeEach(async () => {
 });
 
 describe('lending and borrowing CRUD', () => {
+  it('returns active lending and borrowing records when status is ALL', async () => {
+    const user = userId.toString();
+    const lending = await createLending(user, {
+      type: 'LENDING',
+      personName: 'Alex',
+      amount: 1_000,
+      transactionDate: '2026-11-01',
+      accountId,
+      categoryId: lendingCategoryId,
+      paymentMode: 'CASH',
+    });
+    await createTransaction(user, {
+      type: 'BORROWING',
+      personName: 'Jordan',
+      amount: 1_000,
+      transactionDate: '2026-11-01',
+      accountId,
+      categoryId: borrowingCategoryId,
+      paymentMode: 'CASH',
+    });
+
+    const lendingPage = await listLending(user, { status: 'ALL', page: 1, limit: 20 });
+    const borrowingPage = await listBorrowing(user, { status: 'ALL', page: 1, limit: 20 });
+
+    expect(lendingPage.items).toHaveLength(1);
+    expect(lendingPage.items[0]).toMatchObject({ id: lending.linkedRecordId, status: 'ACTIVE' });
+    expect(lendingPage.totalOutstanding).toBe(1_000);
+    expect(borrowingPage.items).toHaveLength(1);
+    expect(borrowingPage.items[0].status).toBe('ACTIVE');
+    expect(borrowingPage.totalOutstanding).toBe(1_000);
+  });
+
   it('updates all lending details through its linked transaction and deletes both when unpaid', async () => {
     const user = userId.toString();
     const created = await createLending(user, {
@@ -115,8 +147,8 @@ describe('lending and borrowing CRUD', () => {
     expect(sourceTransaction).toMatchObject({ amountPaise: 120_000, paymentMode: 'UPI' });
 
     await expect(deleteLending(user, detail.id)).resolves.toEqual({ deleted: true });
-    expect(await LendingRecordModel.findById(detail.id)).toBeNull();
-    expect(await TransactionModel.findById(detail.linkedTransactionId)).toBeNull();
+    expect(await LendingRecordModel.findById(detail.id)).toMatchObject({ isDeleted: true });
+    expect(await TransactionModel.findById(detail.linkedTransactionId)).toMatchObject({ isDeleted: true });
   });
 
   it('protects repaid lending and borrowing history from parent deletion', async () => {

@@ -14,7 +14,9 @@ import { budgetRouter } from './modules/budgets/budget.routes.js';
 import { categoryRoutes } from './modules/categories/category.routes.js';
 import { lendingRouter } from './modules/lending/lending.routes.js';
 import { plannedExpenseRouter } from './modules/planned-expenses/planned-expense.routes.js';
+import { plannedIncomeRouter } from './modules/planned-incomes/planned-income.routes.js';
 import { recurringRouter } from './modules/recurring/recurring.routes.js';
+import { savingsRouter } from './modules/savings/savings.routes.js';
 import { transactionRouter } from './modules/transactions/transaction.routes.js';
 import { userRoutes } from './modules/users/user.routes.js';
 import { NotFoundError } from './shared/errors/AppError.js';
@@ -67,7 +69,9 @@ export function createApp() {
   app.use('/api/v1/lending', lendingRouter);
   app.use('/api/v1/borrowing', borrowingRouter);
   app.use('/api/v1/planned-expenses', plannedExpenseRouter);
+  app.use('/api/v1/planned-incomes', plannedIncomeRouter);
   app.use('/api/v1/recurring', recurringRouter);
+  app.use('/api/v1/savings', savingsRouter);
   app.use('/api/v1/users', userRoutes);
 
   app.use((_req, _res, next) => next(new NotFoundError('Route')));

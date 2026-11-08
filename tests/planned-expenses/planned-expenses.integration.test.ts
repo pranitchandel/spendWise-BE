@@ -93,6 +93,8 @@ describe('planned expense campaigns', () => {
       items: [{ name: 'Tickets', categoryId: travelCategoryId, estimatedAmount: 1_000 }],
     });
     await expect(deletePlannedExpense(user, emptyCampaign.id)).resolves.toEqual({ id: emptyCampaign.id });
+    expect(await PlannedExpenseModel.findById(emptyCampaign.id)).toMatchObject({ isDeleted: true });
+    expect((await listPlannedExpenses(user)).some((campaign) => campaign.id === emptyCampaign.id)).toBe(false);
   });
 
   it('locks spent line identity while allowing estimate changes and edits to unspent lines', async () => {
@@ -100,7 +102,7 @@ describe('planned expense campaigns', () => {
     const campaign = await createPlannedExpense(user, {
       name: 'Wedding',
       items: [
-        { name: 'Travel', categoryId: travelCategoryId, estimatedAmount: 10_000 },
+        { name: 'Travel', categoryId: travelCategoryId, accountId, estimatedAmount: 10_000 },
         { name: 'Gift', categoryId: giftCategoryId, estimatedAmount: 5_000 },
       ],
     });
@@ -137,7 +139,29 @@ describe('planned expense campaigns', () => {
       ],
     });
     expect(updated.items.map((item) => item.name)).toEqual(['Travel', 'Updated gift', 'Outfit']);
+    expect(updated.items[0].accountId).toBe(accountId);
     expect(updated.summary).toMatchObject({ estimatedAmount: 21_000, spentAmount: 2_000 });
+  });
+
+  it('soft-deletes removed campaign lines while omitting them from the active campaign view', async () => {
+    const user = userId.toString();
+    const campaign = await createPlannedExpense(user, {
+      name: 'Two line campaign',
+      items: [
+        { name: 'Keep', categoryId: travelCategoryId, estimatedAmount: 2_000 },
+        { name: 'Remove', categoryId: giftCategoryId, estimatedAmount: 1_000 },
+      ],
+    });
+    const keep = campaign.items.find((item) => item.name === 'Keep')!;
+
+    const updated = await updatePlannedExpense(user, campaign.id, {
+      items: [{ id: keep.id, name: keep.name, categoryId: travelCategoryId, estimatedAmount: keep.estimatedAmount }],
+    });
+    const stored = await PlannedExpenseModel.findById(campaign.id);
+
+    expect(updated.items.map((item) => item.name)).toEqual(['Keep']);
+    expect(stored?.items).toHaveLength(2);
+    expect(stored?.items.find((item) => item.name === 'Remove')?.isDeleted).toBe(true);
   });
 
   it('only allows transaction-section edits while the linked campaign is planned', async () => {
@@ -202,13 +226,14 @@ describe('planned expense campaigns', () => {
       dueDate: '2026-11-20',
       notes: 'Travel and gift',
       items: [
-        { name: 'Travel', categoryId: travelCategoryId, estimatedAmount: 10_000 },
+        { name: 'Travel', categoryId: travelCategoryId, accountId, estimatedAmount: 10_000 },
         { name: 'Gift', categoryId: giftCategoryId, estimatedAmount: 5_000 },
       ],
     });
 
     expect(campaign.summary).toMatchObject({ estimatedAmount: 15_000, spentAmount: 0, remainingAmount: 15_000 });
     const [travelItem, giftItem] = campaign.items;
+    expect(travelItem).toMatchObject({ accountId, accountName: 'Cash' });
     const afterFirstChunk = await recordCampaignSpend(user, campaign.id, {
       itemId: travelItem.id,
       amount: 3_000,

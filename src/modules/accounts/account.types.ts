@@ -31,6 +31,8 @@ export const listAccountsQuerySchema = z.object({
     .union([z.literal('true'), z.literal('false')])
     .optional()
     .transform((v) => v === 'true'),
+  page: paginationSchema.shape.page.optional(),
+  limit: paginationSchema.shape.limit.optional(),
 });
 
 export const accountTransactionsQuerySchema = paginationSchema.extend({

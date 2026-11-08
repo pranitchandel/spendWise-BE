@@ -15,6 +15,8 @@ export const categoryController = {
       const query = res.locals.validatedQuery as {
         type?: CategoryType;
         includeArchived?: boolean;
+        page?: number;
+        limit?: number;
       };
       const data = await categoryService.list(uid(req), query);
       return sendSuccess(res, data);
@@ -50,12 +52,4 @@ export const categoryController = {
     }
   },
 
-  async permanentlyDelete(req: Request, res: Response, next: NextFunction) {
-    try {
-      const data = await categoryService.permanentlyDelete(uid(req), req.params.id as string);
-      return sendSuccess(res, data);
-    } catch (err) {
-      return next(err);
-    }
-  },
 };

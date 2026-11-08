@@ -4,27 +4,28 @@ import { toPaise, toRupees } from '../../shared/utils/money.js';
 import { toObjectId } from '../../shared/utils/mongo.js';
 import { buildPaginationMeta, normalizePagination } from '../../shared/utils/pagination.js';
 import { serializeDoc } from '../../shared/utils/serializers.js';
-import { BorrowingRecordModel } from '../borrowing/borrowing.model.js';
-import { LendingRecordModel } from '../lending/lending.model.js';
-import { RepaymentModel } from '../repayments/repayment.model.js';
-import { RecurringRuleModel } from '../recurring/recurring.model.js';
 import { computeBalanceFromMovements } from '../transactions/ledger.js';
 import { TransactionModel } from '../transactions/transaction.model.js';
 import { AccountModel } from './account.model.js';
 import type { CreateAccountInput } from './account.types.js';
 
 export const accountService = {
-  async list(userId: string, includeArchived = false) {
+  async list(userId: string, includeArchived = false, pagination?: { page?: number; limit?: number }) {
     const query: Record<string, unknown> = { userId: toObjectId(userId, 'userId') };
     if (!includeArchived) query.isArchived = false;
-    const accounts = await AccountModel.find(query).sort({ name: 1 }).lean();
-    const withBalances = await Promise.all(
-      accounts.map(async (a) => {
+    const shouldPaginate = pagination?.page !== undefined || pagination?.limit !== undefined;
+    const { page, limit, skip } = normalizePagination(pagination);
+    const [total, accounts] = await Promise.all([
+      shouldPaginate ? AccountModel.countDocuments(query) : Promise.resolve(0),
+      AccountModel.find(query).sort({ name: 1 }).skip(shouldPaginate ? skip : 0).limit(shouldPaginate ? limit : 0).lean(),
+    ]);
+    const withBalances = await Promise.all(accounts.map(async (a) => {
         const balancePaise = await this.getBalancePaise(userId, a._id.toString());
         return { ...serializeDoc(a), balance: toRupees(balancePaise), balancePaise };
-      }),
-    );
-    return withBalances;
+    }));
+    return shouldPaginate
+      ? { items: withBalances, ...buildPaginationMeta(total, page, limit) }
+      : withBalances;
   },
 
   async create(userId: string, input: CreateAccountInput) {
@@ -112,43 +113,6 @@ export const accountService = {
     return this.update(userId, id, { isArchived: true, isActive: false });
   },
 
-  async permanentlyDelete(userId: string, id: string) {
-    const ownerId = toObjectId(userId, 'userId');
-    const accountId = toObjectId(id);
-    const account = await AccountModel.findOne({ _id: accountId, userId: ownerId }).lean();
-    if (!account) throw new NotFoundError('Account');
-
-    const references = await Promise.all([
-      TransactionModel.countDocuments({
-        userId: ownerId,
-        isDeleted: false,
-        $or: [{ accountId }, { toAccountId: accountId }],
-      }),
-      RecurringRuleModel.countDocuments({
-        userId: ownerId,
-        $or: [{ accountId }, { toAccountId: accountId }],
-      }),
-      LendingRecordModel.countDocuments({ userId: ownerId, sourceAccountId: accountId }),
-      BorrowingRecordModel.countDocuments({ userId: ownerId, receivingAccountId: accountId }),
-      RepaymentModel.countDocuments({ userId: ownerId, accountId, isDeleted: false }),
-    ]);
-
-    if (references.some((count) => count > 0)) {
-      throw new ConflictError('This account has linked financial history or schedules. Archive it instead.');
-    }
-
-    await Promise.all([
-      TransactionModel.deleteMany({
-        userId: ownerId,
-        isDeleted: true,
-        $or: [{ accountId }, { toAccountId: accountId }],
-      }),
-      RepaymentModel.deleteMany({ userId: ownerId, accountId, isDeleted: true }),
-    ]);
-    await AccountModel.deleteOne({ _id: accountId, userId: ownerId });
-    return { id };
-  },
-
   async getOwned(userId: string, id: string) {
     const account = await AccountModel.findOne({
       _id: toObjectId(id),
@@ -171,7 +135,7 @@ export const accountService = {
       isDeleted: false,
       $or: [{ accountId: account._id }, { toAccountId: account._id }],
     })
-      .select('type amountPaise accountId toAccountId')
+      .select('type amountPaise accountId toAccountId savingsMovementDirection')
       .lean();
 
     return computeBalanceFromMovements(
@@ -181,6 +145,7 @@ export const accountService = {
         amountPaise: m.amountPaise,
         accountId: String(m.accountId),
         toAccountId: m.toAccountId ? String(m.toAccountId) : null,
+        savingsMovementDirection: m.savingsMovementDirection,
       })),
       accountId,
     );

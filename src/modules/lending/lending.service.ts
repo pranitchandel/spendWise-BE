@@ -1,4 +1,6 @@
+import { Types } from 'mongoose';
 import { ConflictError, NotFoundError } from '../../shared/errors/AppError.js';
+import { buildPaginationMeta, normalizePagination } from '../../shared/utils/pagination.js';
 import { formatDateIST, nowInIST } from '../../shared/utils/date.js';
 import { toRupees } from '../../shared/utils/money.js';
 import { LendingRecordModel } from './lending.model.js';
@@ -54,15 +56,30 @@ function toLendingDto(record: {
   };
 }
 
-export async function listLending(userId: string, status?: string) {
-  const filter: Record<string, unknown> = { userId };
-  if (status) filter.status = status;
-  const records = await LendingRecordModel.find(filter).sort({ lendingDate: -1 });
-  return records.map(toLendingDto);
+export async function listLending(userId: string, input: string | { status?: string; search?: string; page?: number; limit?: number } = {}) {
+  const query = typeof input === 'string' ? { status: input } : input;
+  const filter: Record<string, unknown> = { userId: new Types.ObjectId(userId), isDeleted: { $ne: true } };
+  if (query.status && query.status !== 'ALL') filter.status = query.status;
+  if (query.search) filter.$or = [
+    { personName: { $regex: query.search, $options: 'i' } },
+    { phone: { $regex: query.search, $options: 'i' } },
+    { email: { $regex: query.search, $options: 'i' } },
+    { description: { $regex: query.search, $options: 'i' } },
+    { notes: { $regex: query.search, $options: 'i' } },
+  ];
+  const { page, limit, skip } = normalizePagination(query);
+  const [total, records, summary] = await Promise.all([
+    LendingRecordModel.countDocuments(filter),
+    LendingRecordModel.find(filter).sort({ lendingDate: -1, _id: -1 }).skip(skip).limit(limit),
+    LendingRecordModel.aggregate([{ $match: filter }, { $group: { _id: null, totalOutstanding: { $sum: '$outstandingPaise' } } }]),
+  ]);
+  const items = records.map(toLendingDto);
+  if (typeof input === 'string' || (query.page === undefined && query.limit === undefined)) return items;
+  return { items, totalOutstanding: toRupees(summary[0]?.totalOutstanding ?? 0), ...buildPaginationMeta(total, page, limit) };
 }
 
 export async function getLending(userId: string, id: string) {
-  const record = await LendingRecordModel.findOne({ _id: id, userId });
+  const record = await LendingRecordModel.findOne({ _id: id, userId, isDeleted: { $ne: true } });
   if (!record) throw new NotFoundError('Lending record');
   const [repayments, transaction] = await Promise.all([
     RepaymentModel.find({
@@ -71,7 +88,7 @@ export async function getLending(userId: string, id: string) {
       recordId: id,
       isDeleted: false,
     }).sort({ repaymentDate: -1 }),
-    TransactionModel.findOne({ _id: record.linkedTransactionId, userId }).select('categoryId paymentMode'),
+    TransactionModel.findOne({ _id: record.linkedTransactionId, userId, isDeleted: false }).select('categoryId paymentMode'),
   ]);
 
   return {
@@ -115,7 +132,7 @@ export async function updateLending(
     notes?: string;
   },
 ) {
-  const record = await LendingRecordModel.findOne({ _id: id, userId });
+  const record = await LendingRecordModel.findOne({ _id: id, userId, isDeleted: { $ne: true } });
   if (!record) throw new NotFoundError('Lending record');
   const hasRepayments = await RepaymentModel.exists({
     userId,
@@ -144,7 +161,7 @@ export async function updateLending(
 }
 
 export async function deleteLending(userId: string, id: string) {
-  const record = await LendingRecordModel.findOne({ _id: id, userId });
+  const record = await LendingRecordModel.findOne({ _id: id, userId, isDeleted: { $ne: true } });
   if (!record) throw new NotFoundError('Lending record');
   return deleteTransaction(userId, record.linkedTransactionId.toString());
 }
@@ -163,7 +180,7 @@ export async function addRepayment(
     idempotencyKey?: string;
   },
 ) {
-  const record = await LendingRecordModel.findOne({ _id: lendingId, userId });
+  const record = await LendingRecordModel.findOne({ _id: lendingId, userId, isDeleted: { $ne: true } });
   if (!record) throw new NotFoundError('Lending record');
 
   return createTransaction(userId, {
@@ -182,7 +199,7 @@ export async function addRepayment(
 }
 
 export async function lendingDashboard(userId: string) {
-  const records = await LendingRecordModel.find({ userId });
+  const records = await LendingRecordModel.find({ userId, isDeleted: { $ne: true } });
   let totalLent = 0;
   let totalRecovered = 0;
   let totalOutstanding = 0;

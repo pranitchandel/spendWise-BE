@@ -43,6 +43,16 @@ describe('financial ledger rules', () => {
     expect(accountDeltaForType('BORROWING_REPAYMENT', 1_000)).toBe(-1_000);
   });
 
+  it('debits savings deposits and credits savings withdrawals on their selected account', () => {
+    const movements = [
+      { transactionType: 'TRANSFER' as const, amountPaise: 2_500, accountId: 'checking', savingsMovementDirection: 'DEPOSIT' as const },
+      { transactionType: 'TRANSFER' as const, amountPaise: 500, accountId: 'checking', savingsMovementDirection: 'WITHDRAWAL' as const },
+    ];
+
+    expect(computeBalanceFromMovements(10_000, movements, 'checking')).toBe(8_000);
+    expect(computeBalanceFromMovements(10_000, movements, 'other')).toBe(10_000);
+  });
+
   it('only expenses consume budgets and refunds reduce them', () => {
     expect(affectsBudget('EXPENSE')).toBe('consume');
     expect(affectsBudget('REFUND')).toBe('reduce');

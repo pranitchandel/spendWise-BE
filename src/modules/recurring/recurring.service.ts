@@ -1,5 +1,6 @@
 import mongoose, { Types } from 'mongoose';
 import { ConflictError, NotFoundError, ValidationError } from '../../shared/errors/AppError.js';
+import { buildPaginationMeta, normalizePagination } from '../../shared/utils/pagination.js';
 import { toIST, startOfDayIST, formatDateIST } from '../../shared/utils/date.js';
 import { toPaise, toRupees } from '../../shared/utils/money.js';
 import { toObjectId } from '../../shared/utils/mongo.js';
@@ -72,9 +73,16 @@ async function serializeRule(rule: RecurringRuleDocument) {
   };
 }
 
-export async function listRecurring(userId: string) {
-  const rules = await RecurringRuleModel.find({ userId: toObjectId(userId, 'userId') }).sort({ nextDueDate: 1 });
-  return Promise.all(rules.map(serializeRule));
+export async function listRecurring(userId: string, query: { page?: number; limit?: number; includeInactive?: boolean } = {}) {
+  const filter = { userId: toObjectId(userId, 'userId'), ...(query.includeInactive ? {} : { isActive: true }) };
+  const { page, limit, skip } = normalizePagination(query);
+  const [total, rules] = await Promise.all([
+    RecurringRuleModel.countDocuments(filter),
+    RecurringRuleModel.find(filter).sort({ nextDueDate: 1, _id: 1 }).skip(skip).limit(limit),
+  ]);
+  const items = await Promise.all(rules.map(serializeRule));
+  if (query.page === undefined && query.limit === undefined) return items;
+  return { items, ...buildPaginationMeta(total, page, limit) };
 }
 
 export async function createRecurring(userId: string, input: {

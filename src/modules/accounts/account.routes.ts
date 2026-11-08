@@ -24,11 +24,6 @@ accountRoutes.put(
   accountController.update,
 );
 accountRoutes.delete(
-  '/:id/permanent',
-  validate(accountIdParamsSchema, 'params'),
-  accountController.permanentlyDelete,
-);
-accountRoutes.delete(
   '/:id',
   validate(accountIdParamsSchema, 'params'),
   accountController.remove,

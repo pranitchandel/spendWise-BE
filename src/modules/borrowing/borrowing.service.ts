@@ -1,4 +1,6 @@
+import { Types } from 'mongoose';
 import { ConflictError, NotFoundError } from '../../shared/errors/AppError.js';
+import { buildPaginationMeta, normalizePagination } from '../../shared/utils/pagination.js';
 import { formatDateIST, nowInIST } from '../../shared/utils/date.js';
 import { toRupees } from '../../shared/utils/money.js';
 import { BorrowingRecordModel } from './borrowing.model.js';
@@ -54,15 +56,30 @@ function toBorrowingDto(record: {
   };
 }
 
-export async function listBorrowing(userId: string, status?: string) {
-  const filter: Record<string, unknown> = { userId };
-  if (status) filter.status = status;
-  const records = await BorrowingRecordModel.find(filter).sort({ borrowingDate: -1 });
-  return records.map(toBorrowingDto);
+export async function listBorrowing(userId: string, input: string | { status?: string; search?: string; page?: number; limit?: number } = {}) {
+  const query = typeof input === 'string' ? { status: input } : input;
+  const filter: Record<string, unknown> = { userId: new Types.ObjectId(userId), isDeleted: { $ne: true } };
+  if (query.status && query.status !== 'ALL') filter.status = query.status;
+  if (query.search) filter.$or = [
+    { lenderName: { $regex: query.search, $options: 'i' } },
+    { phone: { $regex: query.search, $options: 'i' } },
+    { email: { $regex: query.search, $options: 'i' } },
+    { repaymentTerms: { $regex: query.search, $options: 'i' } },
+    { notes: { $regex: query.search, $options: 'i' } },
+  ];
+  const { page, limit, skip } = normalizePagination(query);
+  const [total, records, summary] = await Promise.all([
+    BorrowingRecordModel.countDocuments(filter),
+    BorrowingRecordModel.find(filter).sort({ borrowingDate: -1, _id: -1 }).skip(skip).limit(limit),
+    BorrowingRecordModel.aggregate([{ $match: filter }, { $group: { _id: null, totalOutstanding: { $sum: '$outstandingPaise' } } }]),
+  ]);
+  const items = records.map(toBorrowingDto);
+  if (typeof input === 'string' || (query.page === undefined && query.limit === undefined)) return items;
+  return { items, totalOutstanding: toRupees(summary[0]?.totalOutstanding ?? 0), ...buildPaginationMeta(total, page, limit) };
 }
 
 export async function getBorrowing(userId: string, id: string) {
-  const record = await BorrowingRecordModel.findOne({ _id: id, userId });
+  const record = await BorrowingRecordModel.findOne({ _id: id, userId, isDeleted: { $ne: true } });
   if (!record) throw new NotFoundError('Borrowing record');
   const [repayments, transaction] = await Promise.all([
     RepaymentModel.find({
@@ -71,7 +88,7 @@ export async function getBorrowing(userId: string, id: string) {
       recordId: id,
       isDeleted: false,
     }).sort({ repaymentDate: -1 }),
-    TransactionModel.findOne({ _id: record.linkedTransactionId, userId }).select('categoryId paymentMode'),
+    TransactionModel.findOne({ _id: record.linkedTransactionId, userId, isDeleted: false }).select('categoryId paymentMode'),
   ]);
 
   return {
@@ -108,7 +125,7 @@ export async function updateBorrowing(
     notes?: string;
   },
 ) {
-  const record = await BorrowingRecordModel.findOne({ _id: id, userId });
+  const record = await BorrowingRecordModel.findOne({ _id: id, userId, isDeleted: { $ne: true } });
   if (!record) throw new NotFoundError('Borrowing record');
   const hasRepayments = await RepaymentModel.exists({
     userId,
@@ -137,7 +154,7 @@ export async function updateBorrowing(
 }
 
 export async function deleteBorrowing(userId: string, id: string) {
-  const record = await BorrowingRecordModel.findOne({ _id: id, userId });
+  const record = await BorrowingRecordModel.findOne({ _id: id, userId, isDeleted: { $ne: true } });
   if (!record) throw new NotFoundError('Borrowing record');
   return deleteTransaction(userId, record.linkedTransactionId.toString());
 }
@@ -156,7 +173,7 @@ export async function addRepayment(
     idempotencyKey?: string;
   },
 ) {
-  const record = await BorrowingRecordModel.findOne({ _id: borrowingId, userId });
+  const record = await BorrowingRecordModel.findOne({ _id: borrowingId, userId, isDeleted: { $ne: true } });
   if (!record) throw new NotFoundError('Borrowing record');
 
   return createTransaction(userId, {
@@ -175,7 +192,7 @@ export async function addRepayment(
 }
 
 export async function borrowingDashboard(userId: string) {
-  const records = await BorrowingRecordModel.find({ userId });
+  const records = await BorrowingRecordModel.find({ userId, isDeleted: { $ne: true } });
   let totalBorrowed = 0;
   let totalRepaid = 0;
   let totalOutstanding = 0;

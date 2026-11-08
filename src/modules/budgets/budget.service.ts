@@ -2,6 +2,7 @@ import { ConflictError, NotFoundError, ValidationError } from '../../shared/erro
 import { BUDGET_THRESHOLDS } from '../../shared/constants/index.js';
 import { endOfMonthIST, nowInIST, startOfMonthIST } from '../../shared/utils/date.js';
 import { addPaise, percentage, subtractPaise, toPaise, toRupees } from '../../shared/utils/money.js';
+import { buildPaginationMeta, normalizePagination } from '../../shared/utils/pagination.js';
 import { CategoryModel } from '../categories/category.model.js';
 import { TransactionModel } from '../transactions/transaction.model.js';
 import { MonthlyBudgetModel } from './budget.model.js';
@@ -19,9 +20,16 @@ export async function getBudget(userId: string, year: number, month: number) {
   return enrichBudget(userId, budget);
 }
 
-export async function listBudgets(userId: string) {
-  const budgets = await MonthlyBudgetModel.find({ userId }).sort({ year: -1, month: -1 });
-  return Promise.all(budgets.map((b) => enrichBudget(userId, b)));
+export async function listBudgets(userId: string, query: { year?: number; page?: number; limit?: number } = {}) {
+  const filter: Record<string, unknown> = { userId };
+  if (query.year !== undefined) filter.year = query.year;
+  const { page, limit, skip } = normalizePagination(query);
+  const [total, budgets] = await Promise.all([
+    MonthlyBudgetModel.countDocuments(filter),
+    MonthlyBudgetModel.find(filter).sort({ year: -1, month: -1 }).skip(skip).limit(limit),
+  ]);
+  const items = await Promise.all(budgets.map((budget) => enrichBudget(userId, budget)));
+  return { items, ...buildPaginationMeta(total, page, limit) };
 }
 
 export async function getMonthlySpendingByCategory(userId: string, year: number, month: number) {
@@ -110,10 +118,23 @@ export async function updateBudget(
   const budget = await MonthlyBudgetModel.findOne({ _id: id, userId });
   if (!budget) throw new NotFoundError('Budget');
   if (data.items) {
-    budget.set('items', data.items.map((i) => ({
-      categoryId: i.categoryId as unknown as typeof budget.items[0]['categoryId'],
-      amountPaise: toPaise(i.amount),
-    })));
+    const activeItems = budget.items.filter((item) => !item.isDeleted);
+    const requestedCategoryIds = new Set(data.items.map((item) => item.categoryId));
+    for (const existing of activeItems) {
+      if (!requestedCategoryIds.has(existing.categoryId.toString())) existing.isDeleted = true;
+    }
+    for (const item of data.items) {
+      const existing = budget.items.find((candidate) => candidate.categoryId.toString() === item.categoryId);
+      if (existing) {
+        existing.amountPaise = toPaise(item.amount);
+        existing.isDeleted = false;
+      } else {
+        budget.items.push({
+          categoryId: item.categoryId as unknown as typeof budget.items[0]['categoryId'],
+          amountPaise: toPaise(item.amount),
+        });
+      }
+    }
   }
   if (data.notes !== undefined) budget.notes = data.notes;
   await budget.save();
@@ -148,7 +169,17 @@ export async function copyBudget(
   }
 
   if (existing && data.overwrite) {
-    existing.items = source.items;
+    const sourceItems = source.items.filter((item) => !item.isDeleted);
+    for (const targetItem of existing.items) targetItem.isDeleted = true;
+    for (const sourceItem of sourceItems) {
+      const targetItem = existing.items.find((item) => item.categoryId.equals(sourceItem.categoryId));
+      if (targetItem) {
+        targetItem.amountPaise = sourceItem.amountPaise;
+        targetItem.isDeleted = false;
+      } else {
+        existing.items.push({ categoryId: sourceItem.categoryId, amountPaise: sourceItem.amountPaise });
+      }
+    }
     existing.notes = source.notes;
     await existing.save();
     return enrichBudget(userId, existing);
@@ -158,7 +189,10 @@ export async function copyBudget(
     userId,
     year: data.toYear,
     month: data.toMonth,
-    items: source.items,
+    items: source.items.filter((item) => !item.isDeleted).map((item) => ({
+      categoryId: item.categoryId,
+      amountPaise: item.amountPaise,
+    })),
     notes: source.notes,
   });
   return enrichBudget(userId, created);
@@ -171,7 +205,7 @@ async function enrichBudget(
     year: number;
     month: number;
     notes?: string;
-    items: Array<{ categoryId: { toString(): string }; amountPaise: number }>;
+    items: Array<{ categoryId: { toString(): string }; amountPaise: number; isDeleted?: boolean }>;
   },
 ) {
   const from = startOfMonthIST(budget.year, budget.month);
@@ -207,7 +241,7 @@ async function enrichBudget(
   let totalBudgetPaise = 0;
   let totalSpentPaise = 0;
 
-  const items = budget.items.map((item) => {
+  const items = budget.items.filter((item) => !item.isDeleted).map((item) => {
     const catId = item.categoryId.toString();
     const spent = spentByCategory.get(catId) ?? { spentPaise: 0, count: 0 };
     const remainingPaise = subtractPaise(item.amountPaise, spent.spentPaise);

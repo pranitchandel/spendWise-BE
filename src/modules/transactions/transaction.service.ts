@@ -17,6 +17,7 @@ import { RepaymentModel } from '../repayments/repayment.model.js';
 import { PersonModel } from '../people/person.model.js';
 import { RecurringOccurrenceModel } from '../recurring/recurring.model.js';
 import { PlannedExpenseModel } from '../planned-expenses/planned-expense.model.js';
+import { PlannedIncomeModel } from '../planned-incomes/planned-income.model.js';
 import { TransactionModel, type TransactionDocument } from './transaction.model.js';
 import { toTransactionDto } from './transaction.mapper.js';
 import type {
@@ -59,14 +60,39 @@ async function assertCampaignAllowsTransactionChange(
   }
   if (!campaignId) return;
 
-  const campaign = await PlannedExpenseModel.findOne({
-    _id: campaignId,
-    userId,
-    status: 'PLANNED',
+    const campaign = await PlannedExpenseModel.findOne({
+      _id: campaignId,
+      userId,
+      status: 'PLANNED',
+      isDeleted: { $ne: true },
   }).session(session ?? null);
   if (!campaign) {
     throw new ConflictError('Reopen the campaign before editing or deleting its linked transactions.');
   }
+}
+
+async function assertSavingsAllowsTransactionChange(
+  _userId: string,
+  transaction: Pick<TransactionDocument, 'savingsGoalId'>,
+  _session?: mongoose.ClientSession,
+) {
+  if (!transaction.savingsGoalId) return;
+  throw new ConflictError('Manage savings-linked movements from the Savings section.');
+}
+
+async function assertPlannedIncomeAllowsTransactionChange(
+  userId: string,
+  transaction: Pick<TransactionDocument, 'plannedIncomeId'>,
+  session?: mongoose.ClientSession,
+) {
+  if (!transaction.plannedIncomeId) return;
+  const plan = await PlannedIncomeModel.findOne({
+    _id: transaction.plannedIncomeId,
+    userId,
+    status: 'ACTIVE',
+      isDeleted: { $ne: true },
+    }).session(session ?? null);
+  if (!plan) throw new ConflictError('Reopen the income plan before editing or deleting its linked actuals.');
 }
 
 async function serializeTransactionsWithCampaignStatus(userId: string, transactions: TransactionDocument[]) {
@@ -149,6 +175,8 @@ export async function createTransaction(
   idempotencyKey?: string,
   transactionSession?: mongoose.ClientSession,
   plannedExpenseLink?: { plannedExpenseId: string; plannedExpenseItemId: string },
+  savingsLink?: { savingsGoalId: string; savingsAllocationId: string; savingsMovementDirection: 'DEPOSIT' | 'WITHDRAWAL' },
+  plannedIncomeLink?: { plannedIncomeId: string; plannedIncomeOccurrenceDate: string },
 ) {
   const key = idempotencyKey ?? input.idempotencyKey;
   if (key) {
@@ -165,7 +193,13 @@ export async function createTransaction(
   const interestPaise = toPaise(input.interestAmount ?? 0);
   const txDate = startOfDayIST(input.transactionDate);
 
-  if (input.type === 'TRANSFER' && !input.toAccountId) {
+  if (savingsLink && input.type !== 'TRANSFER') {
+    throw new ValidationError('Savings movements must be recorded as transfers');
+  }
+  if (plannedIncomeLink && input.type !== 'INCOME') {
+    throw new ValidationError('Planned income actuals must be recorded as income');
+  }
+  if (input.type === 'TRANSFER' && !input.toAccountId && !savingsLink) {
     throw new ValidationError('toAccountId is required for transfers');
   }
   if (input.type === 'TRANSFER' && input.toAccountId === input.accountId) {
@@ -227,7 +261,7 @@ export async function createTransaction(
     }
 
     const person = await resolvePerson(userId, input, session);
-    const transferGroupId = input.type === 'TRANSFER' ? randomUUID() : null;
+    const transferGroupId = input.type === 'TRANSFER' && input.toAccountId ? randomUUID() : null;
 
     const [tx] = await TransactionModel.create(
       [
@@ -251,6 +285,11 @@ export async function createTransaction(
             ? new mongoose.Types.ObjectId(plannedExpenseLink.plannedExpenseId)
             : null,
           plannedExpenseItemId: plannedExpenseLink?.plannedExpenseItemId ?? null,
+          savingsGoalId: savingsLink ? new mongoose.Types.ObjectId(savingsLink.savingsGoalId) : null,
+          savingsAllocationId: savingsLink?.savingsAllocationId ?? null,
+          savingsMovementDirection: savingsLink?.savingsMovementDirection ?? null,
+          plannedIncomeId: plannedIncomeLink ? new mongoose.Types.ObjectId(plannedIncomeLink.plannedIncomeId) : null,
+          plannedIncomeOccurrenceDate: plannedIncomeLink ? startOfDayIST(plannedIncomeLink.plannedIncomeOccurrenceDate) : null,
           transferGroupId,
           isCreditCardBillPayment: input.isCreditCardBillPayment ?? false,
           idempotencyKey: key ?? null,
@@ -546,6 +585,9 @@ export async function updateTransaction(
     const tx = await TransactionModel.findOne({ _id: id, userId, isDeleted: false }).session(session);
     if (!tx) throw new NotFoundError('Transaction');
     await assertCampaignAllowsTransactionChange(userId, tx, session);
+    await assertSavingsAllowsTransactionChange(userId, tx, session);
+    await assertPlannedIncomeAllowsTransactionChange(userId, tx, session);
+    await assertPlannedIncomeAllowsTransactionChange(userId, tx, session);
 
     const oldAmountPaise = tx.amountPaise;
     const nextAmountPaise = input.amount === undefined ? oldAmountPaise : toPaise(input.amount);
@@ -553,6 +595,13 @@ export async function updateTransaction(
     const nextDate = input.transactionDate ? startOfDayIST(input.transactionDate) : tx.transactionDate;
     const nextAccountId = input.accountId ?? tx.accountId.toString();
     const nextCategoryId = input.categoryId ?? tx.categoryId.toString();
+
+    if (tx.savingsGoalId && (
+      nextAccountId !== tx.accountId.toString() ||
+      (input.toAccountId !== undefined && input.toAccountId !== tx.toAccountId?.toString())
+    )) {
+      throw new ConflictError('Savings-linked transfers cannot be redirected in the transaction editor.');
+    }
 
     await assertAccount(userId, nextAccountId, session);
     const category = await assertCategory(userId, nextCategoryId, session);
@@ -728,6 +777,7 @@ export async function deleteTransaction(userId: string, id: string) {
     );
     if (!tx) throw new NotFoundError('Transaction');
     await assertCampaignAllowsTransactionChange(userId, tx, session);
+    await assertSavingsAllowsTransactionChange(userId, tx, session);
 
     if (tx.type === 'EXPENSE') {
       const refund = await TransactionModel.findOne({
@@ -769,22 +819,30 @@ export async function deleteTransaction(userId: string, id: string) {
       const record = await LendingRecordModel.findOne({
         _id: tx.linkedRecordId,
         userId,
+        isDeleted: { $ne: true },
       }).session(session);
       if (record && (record.totalRepaidPaise > 0 || record.totalInterestReceivedPaise > 0)) {
         throw new ConflictError('Cannot delete lending with existing repayments');
       }
-      await LendingRecordModel.deleteOne({ _id: tx.linkedRecordId, userId }).session(session);
+      if (record) {
+        record.isDeleted = true;
+        await record.save({ session });
+      }
     }
 
     if (tx.type === 'BORROWING' && tx.linkedRecordId) {
       const record = await BorrowingRecordModel.findOne({
         _id: tx.linkedRecordId,
         userId,
+        isDeleted: { $ne: true },
       }).session(session);
       if (record && (record.totalRepaidPaise > 0 || record.totalInterestPaidPaise > 0)) {
         throw new ConflictError('Cannot delete borrowing with existing repayments');
       }
-      await BorrowingRecordModel.deleteOne({ _id: tx.linkedRecordId, userId }).session(session);
+      if (record) {
+        record.isDeleted = true;
+        await record.save({ session });
+      }
     }
 
     if (tx.type === 'LENDING_REPAYMENT' || tx.type === 'BORROWING_REPAYMENT') {
@@ -812,7 +870,8 @@ export async function deleteTransaction(userId: string, id: string) {
         record.status = record.totalRepaidPaise > 0 ? 'PARTIALLY_REPAID' : 'ACTIVE';
         await record.save({ session });
       }
-      await RepaymentModel.deleteOne({ _id: repayment._id, userId }).session(session);
+      repayment.isDeleted = true;
+      await repayment.save({ session });
     }
 
     await RecurringOccurrenceModel.updateOne(
@@ -820,7 +879,8 @@ export async function deleteTransaction(userId: string, id: string) {
       { $set: { status: 'PENDING', transactionId: null } },
       { session },
     );
-    await TransactionModel.deleteOne({ _id: tx._id, userId }).session(session);
+    tx.isDeleted = true;
+    await tx.save({ session });
     await session.commitTransaction();
     return { deleted: true };
   } catch (err) {

@@ -7,11 +7,9 @@ import {
   type CategoryType,
 } from '../../shared/constants/index.js';
 import { ConflictError, NotFoundError } from '../../shared/errors/AppError.js';
+import { buildPaginationMeta, normalizePagination } from '../../shared/utils/pagination.js';
 import { toObjectId } from '../../shared/utils/mongo.js';
 import { serializeDoc } from '../../shared/utils/serializers.js';
-import { MonthlyBudgetModel } from '../budgets/budget.model.js';
-import { RecurringRuleModel } from '../recurring/recurring.model.js';
-import { TransactionModel } from '../transactions/transaction.model.js';
 import { CategoryModel } from './category.model.js';
 
 export async function seedDefaultCategories(userId: string, session?: ClientSession) {
@@ -35,12 +33,18 @@ export async function seedDefaultCategories(userId: string, session?: ClientSess
 }
 
 export const categoryService = {
-  async list(userId: string, filters: { type?: CategoryType; includeArchived?: boolean }) {
+  async list(userId: string, filters: { type?: CategoryType; includeArchived?: boolean; page?: number; limit?: number }) {
     const query: Record<string, unknown> = { userId: toObjectId(userId, 'userId') };
     if (filters.type) query.type = filters.type;
     if (!filters.includeArchived) query.isArchived = false;
-    const rows = await CategoryModel.find(query).sort({ type: 1, name: 1 }).lean();
-    return rows.map((r) => serializeDoc(r));
+    const shouldPaginate = filters.page !== undefined || filters.limit !== undefined;
+    const { page, limit, skip } = normalizePagination(filters);
+    const [total, rows] = await Promise.all([
+      shouldPaginate ? CategoryModel.countDocuments(query) : Promise.resolve(0),
+      CategoryModel.find(query).sort({ type: 1, name: 1 }).skip(shouldPaginate ? skip : 0).limit(shouldPaginate ? limit : 0).lean(),
+    ]);
+    const items = rows.map((row) => serializeDoc(row));
+    return shouldPaginate ? { items, ...buildPaginationMeta(total, page, limit) } : items;
   },
 
   async create(
@@ -94,26 +98,6 @@ export const categoryService = {
     );
     if (!updated) throw new NotFoundError('Category');
     return serializeDoc(updated);
-  },
-
-  async permanentlyDelete(userId: string, id: string) {
-    const ownerId = toObjectId(userId, 'userId');
-    const categoryId = toObjectId(id, 'categoryId');
-    const category = await CategoryModel.findOne({ _id: categoryId, userId: ownerId }).lean();
-    if (!category) throw new NotFoundError('Category');
-
-    const references = await Promise.all([
-      TransactionModel.countDocuments({ userId: ownerId, categoryId, isDeleted: false }),
-      MonthlyBudgetModel.countDocuments({ userId: ownerId, 'items.categoryId': categoryId }),
-      RecurringRuleModel.countDocuments({ userId: ownerId, categoryId }),
-    ]);
-    if (references.some((count) => count > 0)) {
-      throw new ConflictError('Category is used by transactions, budgets, or recurring schedules. Archive it instead.');
-    }
-
-    await TransactionModel.deleteMany({ userId: ownerId, categoryId, isDeleted: true });
-    await CategoryModel.deleteOne({ _id: categoryId, userId: ownerId });
-    return { id };
   },
 
   async getOwned(userId: string, id: string) {

@@ -151,7 +151,7 @@ describe('recurring transaction occurrences', () => {
 
     const [updatedRule] = await listRecurring(userId.toString());
     expect(updatedRule.occurrences[0]).toMatchObject({ status: 'PENDING', paidTransactionId: null });
-    expect(await TransactionModel.findById(transactionId)).toBeNull();
+      expect(await TransactionModel.findById(transactionId)).toMatchObject({ isDeleted: true });
   });
 
   it('keeps month-end schedules anchored to their original day', async () => {

@@ -4,13 +4,15 @@ import { ConflictError, NotFoundError, ValidationError } from '../../shared/erro
 import { formatDateIST, startOfDayIST } from '../../shared/utils/date.js';
 import { addPaise, subtractPaise, toPaise, toRupees } from '../../shared/utils/money.js';
 import { toObjectId } from '../../shared/utils/mongo.js';
+import { buildPaginationMeta, normalizePagination } from '../../shared/utils/pagination.js';
 import type { PaymentMode } from '../../shared/constants/index.js';
 import { CategoryModel } from '../categories/category.model.js';
+import { AccountModel } from '../accounts/account.model.js';
 import { TransactionModel } from '../transactions/transaction.model.js';
 import { createTransaction } from '../transactions/transaction.service.js';
 import { PlannedExpenseModel, type PlannedExpenseDocument } from './planned-expense.model.js';
 
-type CampaignItemInput = { id?: string; name: string; categoryId: string; estimatedAmount: number };
+type CampaignItemInput = { id?: string; name: string; categoryId: string; accountId?: string | null; estimatedAmount: number };
 type CampaignInput = {
   name?: string;
   dueDate?: string | null;
@@ -37,6 +39,18 @@ async function validateCategory(userId: string, categoryId: string) {
   });
   if (!category) throw new NotFoundError('Expense category');
   return category;
+}
+
+async function validateForecastAccount(userId: string, accountId?: string | null) {
+  if (!accountId) return null;
+  const account = await AccountModel.findOne({
+    _id: toObjectId(accountId, 'accountId'),
+    userId: toObjectId(userId, 'userId'),
+    isArchived: false,
+    isActive: true,
+  });
+  if (!account) throw new NotFoundError('Active forecast account');
+  return account;
 }
 
 async function serializeCampaigns(campaigns: PlannedExpenseDocument[], userId: string) {
@@ -66,6 +80,9 @@ async function serializeCampaigns(campaigns: PlannedExpenseDocument[], userId: s
     userId: toObjectId(userId, 'userId'),
     _id: { $in: [...categoryIds].map((id) => new Types.ObjectId(id)) },
   }).select('name').lean();
+  const accountIds = [...new Set(campaigns.flatMap((campaign) => campaign.items.flatMap((item) => item.accountId ? [item.accountId.toString()] : [])))];
+  const accounts = accountIds.length ? await AccountModel.find({ _id: { $in: accountIds }, userId: toObjectId(userId, 'userId') }).select('_id name').lean() : [];
+  const accountNames = new Map(accounts.map((account) => [account._id.toString(), account.name]));
   const categoryNames = new Map(categories.map((category) => [category._id.toString(), category.name]));
   const refundsByTransaction = new Map<string, number>();
   for (const refund of refunds) {
@@ -78,17 +95,20 @@ async function serializeCampaigns(campaigns: PlannedExpenseDocument[], userId: s
     const campaignTransactions = actualTransactions.filter(
       (transaction) => transaction.plannedExpenseId?.toString() === campaign._id.toString(),
     );
+    const activeItems = campaign.items.filter((item) => !item.isDeleted);
     const storedItems = campaign.items.length
-      ? campaign.items.map((item) => ({
+      ? activeItems.map((item) => ({
           id: item._id.toString(),
           name: item.name,
           categoryId: item.categoryId.toString(),
+          accountId: item.accountId?.toString() ?? null,
           estimatedAmountPaise: item.estimatedAmountPaise,
         }))
       : [{
           id: 'legacy',
           name: 'General expense',
           categoryId: campaign.categoryId?.toString() ?? '',
+          accountId: null,
           estimatedAmountPaise: campaign.estimatedAmountPaise,
         }];
     const items = storedItems.map((item) => {
@@ -108,6 +128,8 @@ async function serializeCampaigns(campaigns: PlannedExpenseDocument[], userId: s
         name: item.name,
         categoryId,
         categoryName: categoryId ? categoryNames.get(categoryId) ?? null : null,
+        accountId: item.accountId ?? null,
+        accountName: item.accountId ? accountNames.get(item.accountId) ?? null : null,
         estimatedAmount: toRupees(item.estimatedAmountPaise),
         spentAmount: toRupees(spentPaise),
         remainingAmount: toRupees(subtractPaise(item.estimatedAmountPaise, spentPaise)),
@@ -150,10 +172,17 @@ async function serializeCampaigns(campaigns: PlannedExpenseDocument[], userId: s
   });
 }
 
-export async function listPlannedExpenses(userId: string) {
-  const campaigns = await PlannedExpenseModel.find({ userId: toObjectId(userId, 'userId') })
-    .sort({ dueDate: 1, createdAt: -1 });
-  return serializeCampaigns(campaigns, userId);
+export async function listPlannedExpenses(userId: string, query: { page?: number; limit?: number; status?: string } = {}) {
+  const filter: Record<string, unknown> = { userId: toObjectId(userId, 'userId'), isDeleted: { $ne: true } };
+  if (query.status) filter.status = query.status;
+  const { page, limit, skip } = normalizePagination(query);
+  const [total, campaigns] = await Promise.all([
+    PlannedExpenseModel.countDocuments(filter),
+    PlannedExpenseModel.find(filter).sort({ dueDate: 1, createdAt: -1, _id: -1 }).skip(skip).limit(limit),
+  ]);
+  const items = await serializeCampaigns(campaigns, userId);
+  if (query.page === undefined && query.limit === undefined) return items;
+  return { items, ...buildPaginationMeta(total, page, limit) };
 }
 
 export async function createPlannedExpense(userId: string, input: Required<Pick<CampaignInput, 'name' | 'items'>> & CampaignInput) {
@@ -163,6 +192,7 @@ export async function createPlannedExpense(userId: string, input: Required<Pick<
   if (!input.items.length) throw new ValidationError('Add at least one campaign item');
   const uid = toObjectId(userId, 'userId');
   const categories = await Promise.all(input.items.map((item) => validateCategory(userId, item.categoryId)));
+  const forecastAccounts = await Promise.all(input.items.map((item) => validateForecastAccount(userId, item.accountId)));
   const itemAmounts = input.items.map((item) => toPaise(item.estimatedAmount));
   if (itemAmounts.some((amount) => amount <= 0)) throw new ValidationError('Each estimate must be greater than zero');
   const estimatedAmountPaise = itemAmounts.reduce((total, amount) => addPaise(total, amount), 0);
@@ -178,6 +208,7 @@ export async function createPlannedExpense(userId: string, input: Required<Pick<
     items: input.items.map((item, index) => ({
       name: item.name.trim(),
       categoryId: categories[index]._id,
+      accountId: forecastAccounts[index]?._id ?? null,
       estimatedAmountPaise: itemAmounts[index],
     })),
   });
@@ -185,7 +216,7 @@ export async function createPlannedExpense(userId: string, input: Required<Pick<
 }
 
 export async function updatePlannedExpense(userId: string, id: string, input: CampaignInput) {
-  const campaign = await PlannedExpenseModel.findOne({ _id: toObjectId(id), userId: toObjectId(userId, 'userId') });
+  const campaign = await PlannedExpenseModel.findOne({ _id: toObjectId(id), userId: toObjectId(userId, 'userId'), isDeleted: { $ne: true } });
   if (!campaign) throw new NotFoundError('Planned expense campaign');
   const hasNonStatusChanges = Object.keys(input).some((key) => key !== 'status');
   if (campaign.status !== 'PLANNED' && hasNonStatusChanges) {
@@ -213,12 +244,17 @@ export async function updatePlannedExpense(userId: string, id: string, input: Ca
     const validatedItems = await Promise.all(input.items.map(async (item) => ({
       item,
       category: await validateCategory(userId, item.categoryId),
+      account: await validateForecastAccount(
+        userId,
+        item.accountId === undefined && item.id ? campaign.items.id(item.id)?.accountId?.toString() : item.accountId,
+      ),
       estimatePaise: toPaise(item.estimatedAmount),
     })));
     if (validatedItems.some(({ estimatePaise }) => estimatePaise <= 0)) {
       throw new ValidationError('Each estimate must be greater than zero');
     }
-    const existingIds = new Set(campaign.items.map((item) => item._id.toString()));
+    const activeItems = campaign.items.filter((item) => !item.isDeleted);
+    const existingIds = new Set(activeItems.map((item) => item._id.toString()));
     const incomingIds = input.items.map((item) => item.id).filter((value): value is string => Boolean(value));
     if (new Set(incomingIds).size !== incomingIds.length) {
       throw new ValidationError('Campaign item IDs must be unique');
@@ -251,12 +287,23 @@ export async function updatePlannedExpense(userId: string, id: string, input: Ca
         throw new ConflictError('An item category cannot change after spending has been recorded.');
       }
     }
-    campaign.items.splice(0, campaign.items.length);
-    for (const { item, category, estimatePaise } of validatedItems) {
+    for (const previous of activeItems) {
+      const incoming = validatedItems.find(({ item }) => item.id === previous._id.toString());
+      if (!incoming) {
+        previous.isDeleted = true;
+        continue;
+      }
+      previous.name = incoming.item.name.trim();
+      previous.categoryId = incoming.category._id;
+      previous.accountId = incoming.account?._id ?? null;
+      previous.estimatedAmountPaise = incoming.estimatePaise;
+    }
+    for (const { item, category, account, estimatePaise } of validatedItems) {
+      if (item.id && existingIds.has(item.id)) continue;
       campaign.items.push({
-        ...(item.id && existingIds.has(item.id) ? { _id: new Types.ObjectId(item.id) } : {}),
         name: item.name.trim(),
         categoryId: category._id,
+        accountId: account?._id ?? null,
         estimatedAmountPaise: estimatePaise,
       });
     }
@@ -276,13 +323,14 @@ export async function recordCampaignSpend(
   idempotencyKey?: string,
 ) {
   const uid = toObjectId(userId, 'userId');
-  const campaign = await PlannedExpenseModel.findOne({ _id: toObjectId(id), userId: uid });
+  const campaign = await PlannedExpenseModel.findOne({ _id: toObjectId(id), userId: uid, isDeleted: { $ne: true } });
   if (!campaign) throw new NotFoundError('Planned expense campaign');
   if (campaign.status !== 'PLANNED') throw new ValidationError('Only active campaigns can record spending');
   const amountPaise = toPaise(input.amount);
   if (amountPaise <= 0) throw new ValidationError('Amount must be greater than zero');
 
   let item = campaign.items.id(input.itemId);
+  if (item?.isDeleted) item = null;
   if (!item && input.itemId === 'legacy' && input.categoryId) {
     const category = await validateCategory(userId, input.categoryId);
     campaign.items.push({
@@ -314,19 +362,20 @@ export async function recordCampaignSpend(
     undefined,
     { plannedExpenseId: campaign._id.toString(), plannedExpenseItemId: item._id.toString() },
   );
-  const refreshed = await PlannedExpenseModel.findOne({ _id: campaign._id, userId: uid });
+  const refreshed = await PlannedExpenseModel.findOne({ _id: campaign._id, userId: uid, isDeleted: { $ne: true } });
   return (await serializeCampaigns(refreshed ? [refreshed] : [], userId))[0];
 }
 
 export async function deletePlannedExpense(userId: string, id: string) {
   const uid = toObjectId(userId, 'userId');
-  const campaign = await PlannedExpenseModel.findOne({ _id: toObjectId(id), userId: uid });
+  const campaign = await PlannedExpenseModel.findOne({ _id: toObjectId(id), userId: uid, isDeleted: { $ne: true } });
   if (!campaign) throw new NotFoundError('Planned expense campaign');
   if (campaign.status !== 'PLANNED') {
     throw new ConflictError('Only planned campaigns can be deleted. Reopen the campaign first.');
   }
-  const hasFinancialHistory = await TransactionModel.exists({ userId: uid, plannedExpenseId: campaign._id });
+  const hasFinancialHistory = await TransactionModel.exists({ userId: uid, plannedExpenseId: campaign._id, isDeleted: false });
   if (hasFinancialHistory) throw new ConflictError('A campaign with linked transactions cannot be deleted. Cancel it to preserve its financial history.');
-  await campaign.deleteOne();
+  campaign.isDeleted = true;
+  await campaign.save();
   return { id: campaign._id.toString() };
 }

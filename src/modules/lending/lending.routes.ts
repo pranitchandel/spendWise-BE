@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { authMiddleware } from '../../middlewares/auth.middleware.js';
 import { validate } from '../../middlewares/validation.middleware.js';
 import { PAYMENT_MODES } from '../../shared/constants/index.js';
+import { paginationSchema } from '../../shared/schemas/common.js';
 import { sendCreated, sendSuccess } from '../../shared/utils/api-response.js';
 import { createTransactionSchema } from '../transactions/transaction.types.js';
 import * as service from './lending.service.js';
@@ -10,9 +11,9 @@ import * as service from './lending.service.js';
 export const lendingRouter = Router();
 lendingRouter.use(authMiddleware);
 
-lendingRouter.get('/', async (req, res, next) => {
+lendingRouter.get('/', validate(paginationSchema.extend({ status: z.string().optional(), search: z.string().trim().optional() }), 'query'), async (req, res, next) => {
   try {
-    const data = await service.listLending(req.user!.userId, req.query.status as string);
+    const data = await service.listLending(req.user!.userId, res.locals.validatedQuery);
     return sendSuccess(res, data);
   } catch (err) {
     return next(err);

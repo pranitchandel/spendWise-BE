@@ -27,6 +27,11 @@ const transactionSchema = new Schema(
     linkedTransactionId: { type: Schema.Types.ObjectId, ref: 'Transaction', default: null },
     plannedExpenseId: { type: Schema.Types.ObjectId, ref: 'PlannedExpense', default: null },
     plannedExpenseItemId: { type: String, default: null },
+    savingsGoalId: { type: Schema.Types.ObjectId, ref: 'SavingsGoal', default: null },
+    savingsAllocationId: { type: String, default: null },
+    savingsMovementDirection: { type: String, enum: ['DEPOSIT', 'WITHDRAWAL'], default: null },
+    plannedIncomeId: { type: Schema.Types.ObjectId, ref: 'PlannedIncome', default: null },
+    plannedIncomeOccurrenceDate: { type: Date, default: null },
     transferGroupId: { type: String, default: null },
     isCreditCardBillPayment: { type: Boolean, default: false },
     idempotencyKey: { type: String, default: null },
@@ -41,6 +46,8 @@ transactionSchema.index({ userId: 1, categoryId: 1 });
 transactionSchema.index({ userId: 1, accountId: 1 });
 transactionSchema.index({ userId: 1, linkedRecordId: 1 });
 transactionSchema.index({ userId: 1, plannedExpenseId: 1, plannedExpenseItemId: 1, isDeleted: 1 });
+transactionSchema.index({ userId: 1, savingsGoalId: 1, savingsAllocationId: 1, isDeleted: 1 });
+transactionSchema.index({ userId: 1, plannedIncomeId: 1, plannedIncomeOccurrenceDate: 1, isDeleted: 1 });
 transactionSchema.index({ userId: 1, isDeleted: 1, transactionDate: -1 });
 transactionSchema.index(
   { userId: 1, idempotencyKey: 1 },

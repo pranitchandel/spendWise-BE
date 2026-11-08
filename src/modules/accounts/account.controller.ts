@@ -11,8 +11,8 @@ function uid(req: Request) {
 export const accountController = {
   async list(req: Request, res: Response, next: NextFunction) {
     try {
-      const query = res.locals.validatedQuery as { includeArchived?: boolean };
-      const data = await accountService.list(uid(req), query.includeArchived ?? false);
+      const query = res.locals.validatedQuery as { includeArchived?: boolean; page?: number; limit?: number };
+      const data = await accountService.list(uid(req), query.includeArchived ?? false, query);
       return sendSuccess(res, data);
     } catch (err) {
       return next(err);
@@ -49,15 +49,6 @@ export const accountController = {
   async remove(req: Request, res: Response, next: NextFunction) {
     try {
       const data = await accountService.remove(uid(req), req.params.id as string);
-      return sendSuccess(res, data);
-    } catch (err) {
-      return next(err);
-    }
-  },
-
-  async permanentlyDelete(req: Request, res: Response, next: NextFunction) {
-    try {
-      const data = await accountService.permanentlyDelete(uid(req), req.params.id as string);
       return sendSuccess(res, data);
     } catch (err) {
       return next(err);

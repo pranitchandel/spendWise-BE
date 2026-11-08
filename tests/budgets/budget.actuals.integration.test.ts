@@ -3,7 +3,8 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { AccountModel } from '../../src/modules/accounts/account.model.js';
 import { CategoryModel } from '../../src/modules/categories/category.model.js';
-import { getBudget, createBudget, getMonthlySpendingByCategory } from '../../src/modules/budgets/budget.service.js';
+import { MonthlyBudgetModel } from '../../src/modules/budgets/budget.model.js';
+import { getBudget, createBudget, copyBudget, getMonthlySpendingByCategory, updateBudget } from '../../src/modules/budgets/budget.service.js';
 import { TransactionModel } from '../../src/modules/transactions/transaction.model.js';
 import { createTransaction } from '../../src/modules/transactions/transaction.service.js';
 
@@ -15,7 +16,7 @@ let categoryId: string;
 beforeAll(async () => {
   replicaSet = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   await mongoose.connect(replicaSet.getUri());
-  await Promise.all([AccountModel.init(), CategoryModel.init(), TransactionModel.init()]);
+  await Promise.all([AccountModel.init(), CategoryModel.init(), MonthlyBudgetModel.init(), TransactionModel.init()]);
 }, 60_000);
 
 afterAll(async () => {
@@ -27,6 +28,7 @@ beforeEach(async () => {
   await Promise.all([
     AccountModel.deleteMany({}),
     CategoryModel.deleteMany({}),
+    MonthlyBudgetModel.deleteMany({}),
     TransactionModel.deleteMany({}),
   ]);
   userId = new Types.ObjectId();
@@ -43,6 +45,35 @@ beforeEach(async () => {
 });
 
 describe('monthly budget expense actuals', () => {
+  it('copies a December budget into January of the next year', async () => {
+    const user = userId.toString();
+    await createBudget(user, { year: 2026, month: 12, items: [{ categoryId, amount: 5_000 }] });
+
+    const copied = await copyBudget(user, { fromYear: 2026, fromMonth: 12, toYear: 2027, toMonth: 1 });
+
+    expect(copied).toMatchObject({ year: 2027, month: 1 });
+    expect(copied.items).toMatchObject([{ categoryId, budgetAmount: 5_000 }]);
+    expect(await getBudget(user, 2026, 1)).toBeNull();
+    expect(await getBudget(user, 2027, 1)).toMatchObject({ year: 2027, month: 1 });
+  });
+
+  it('soft-deletes removed budget categories while retaining the stored row', async () => {
+    const user = userId.toString();
+    const transport = await CategoryModel.create({ userId, name: 'Transport', type: 'EXPENSE' });
+    const budget = await createBudget(user, {
+      year: 2026,
+      month: 11,
+      items: [{ categoryId, amount: 5_000 }, { categoryId: transport._id.toString(), amount: 2_000 }],
+    });
+
+    const updated = await updateBudget(user, budget.id, { items: [{ categoryId, amount: 4_000 }] });
+    const stored = await MonthlyBudgetModel.findById(budget.id);
+
+    expect(updated.items).toHaveLength(1);
+    expect(stored?.items).toHaveLength(2);
+    expect(stored?.items.find((item) => item.categoryId.toString() === transport._id.toString())?.isDeleted).toBe(true);
+  });
+
   it('counts same-month expenses against their allocated category only', async () => {
     await createBudget(userId.toString(), {
       year: 2026,

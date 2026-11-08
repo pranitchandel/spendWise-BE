@@ -73,7 +73,7 @@ describe('account CRUD', () => {
     expect(restored).toMatchObject({ isArchived: false, isActive: true });
   });
 
-  it('permanently deletes an account with no linked records', async () => {
+  it('soft-deletes an account by archiving it while retaining the database row', async () => {
     const account = await accountService.create(userId.toString(), {
       name: 'Unused wallet',
       type: 'CASH',
@@ -81,19 +81,6 @@ describe('account CRUD', () => {
       openingBalanceDate: '2026-11-01',
     });
 
-    const result = await accountService.permanentlyDelete(userId.toString(), String(account.id));
-
-    expect(result).toEqual({ id: String(account.id) });
-    expect(await AccountModel.findById(account.id)).toBeNull();
-  });
-
-  it('prevents permanent deletion when transactions reference the account', async () => {
-    const account = await accountService.create(userId.toString(), {
-      name: 'Used wallet',
-      type: 'CASH',
-      openingBalance: 0,
-      openingBalanceDate: '2026-11-01',
-    });
     await TransactionModel.create({
       userId,
       amountPaise: 100,
@@ -104,32 +91,10 @@ describe('account CRUD', () => {
       accountId: new Types.ObjectId(String(account.id)),
     });
 
-    await expect(accountService.permanentlyDelete(userId.toString(), String(account.id)))
-      .rejects.toMatchObject({ statusCode: 409 });
-    expect(await AccountModel.findById(account.id)).not.toBeNull();
-  });
-
-  it('allows permanent deletion when its only transaction references are soft-deleted', async () => {
-    const account = await accountService.create(userId.toString(), {
-      name: 'Deleted-history wallet',
-      type: 'CASH',
-      openingBalance: 0,
-      openingBalanceDate: '2026-11-01',
-    });
-    const deletedTransaction = await TransactionModel.create({
-      userId,
-      amountPaise: 100,
-      transactionDate: new Date('2026-11-02T00:00:00.000Z'),
-      type: 'EXPENSE',
-      categoryId: new Types.ObjectId(),
-      paymentMode: 'CASH',
-      accountId: new Types.ObjectId(String(account.id)),
-      isDeleted: true,
-    });
-
-    await expect(accountService.permanentlyDelete(userId.toString(), String(account.id)))
-      .resolves.toEqual({ id: String(account.id) });
-    expect(await AccountModel.findById(account.id)).toBeNull();
-    expect(await TransactionModel.findById(deletedTransaction._id)).toBeNull();
+    await accountService.remove(userId.toString(), String(account.id));
+    expect(await AccountModel.findById(account.id)).toMatchObject({ isArchived: true, isActive: false });
+    expect(await TransactionModel.countDocuments({ accountId: account.id })).toBe(1);
+    expect(await accountService.list(userId.toString())).toHaveLength(0);
+    expect(await accountService.list(userId.toString(), true)).toHaveLength(1);
   });
 });

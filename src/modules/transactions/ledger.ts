@@ -61,14 +61,16 @@ export function forwardBudgetDelta(type: TransactionType, amountPaise: number): 
 
 export function computeBalanceFromMovements(
   openingBalancePaise: number,
-  movements: Array<{ transactionType: TransactionType; amountPaise: number; accountId: string; toAccountId?: string | null }>,
+  movements: Array<{ transactionType: TransactionType; amountPaise: number; accountId: string; toAccountId?: string | null; savingsMovementDirection?: 'DEPOSIT' | 'WITHDRAWAL' | null }>,
   accountId: string,
 ): number {
   let balance = openingBalancePaise;
   for (const m of movements) {
     if (m.transactionType === 'TRANSFER') {
       if (String(m.accountId) === accountId) {
-        balance = subtractPaise(balance, m.amountPaise);
+        balance = m.savingsMovementDirection === 'WITHDRAWAL'
+          ? addPaise(balance, m.amountPaise)
+          : subtractPaise(balance, m.amountPaise);
       }
       if (m.toAccountId && String(m.toAccountId) === accountId) {
         balance = addPaise(balance, m.amountPaise);

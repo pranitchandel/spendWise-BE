@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { authMiddleware } from '../../middlewares/auth.middleware.js';
 import { validate } from '../../middlewares/validation.middleware.js';
 import { PAYMENT_MODES } from '../../shared/constants/index.js';
+import { paginationSchema } from '../../shared/schemas/common.js';
 import { sendCreated, sendSuccess } from '../../shared/utils/api-response.js';
 import * as service from './planned-expense.service.js';
 
@@ -13,6 +14,7 @@ const campaignItemSchema = z.object({
   id: z.string().optional(),
   name: z.string().trim().min(1).max(120),
   categoryId: z.string().min(1),
+  accountId: z.string().min(1).nullable().optional(),
   estimatedAmount: z.number().positive(),
 });
 
@@ -24,9 +26,9 @@ const plannedExpenseSchema = z.object({
   notes: z.string().max(2000).optional(),
 });
 
-plannedExpenseRouter.get('/', async (req, res, next) => {
+plannedExpenseRouter.get('/', validate(paginationSchema.extend({ status: z.enum(['PLANNED', 'COMPLETED', 'CANCELLED']).optional() }), 'query'), async (req, res, next) => {
   try {
-    return sendSuccess(res, await service.listPlannedExpenses(req.user!.userId));
+    return sendSuccess(res, await service.listPlannedExpenses(req.user!.userId, res.locals.validatedQuery));
   } catch (error) {
     return next(error);
   }

@@ -21,6 +21,11 @@ export function toTransactionDto(tx: {
   linkedTransactionId?: { toString(): string } | null;
   plannedExpenseId?: { toString(): string } | null;
   plannedExpenseItemId?: string | null;
+  savingsGoalId?: { toString(): string } | null;
+  savingsAllocationId?: string | null;
+  savingsMovementDirection?: 'DEPOSIT' | 'WITHDRAWAL' | null;
+  plannedIncomeId?: { toString(): string } | null;
+  plannedIncomeOccurrenceDate?: Date | null;
   transferGroupId?: string | null;
   isCreditCardBillPayment?: boolean;
   createdAt?: Date;
@@ -49,6 +54,11 @@ export function toTransactionDto(tx: {
       : null,
     plannedExpenseId: tx.plannedExpenseId?.toString() ?? null,
     plannedExpenseItemId: tx.plannedExpenseItemId ?? null,
+    savingsGoalId: tx.savingsGoalId?.toString() ?? null,
+    savingsAllocationId: tx.savingsAllocationId ?? null,
+    savingsMovementDirection: tx.savingsMovementDirection ?? null,
+    plannedIncomeId: tx.plannedIncomeId?.toString() ?? null,
+    plannedIncomeOccurrenceDate: tx.plannedIncomeOccurrenceDate ? formatDateIST(tx.plannedIncomeOccurrenceDate) : null,
     transferGroupId: tx.transferGroupId ?? null,
     isCreditCardBillPayment: tx.isCreditCardBillPayment ?? false,
     createdAt: tx.createdAt?.toISOString(),
